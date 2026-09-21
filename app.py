@@ -75,6 +75,13 @@ def analyze():
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
         market = _engine().category_market_analysis()
+        tracking = market.get('_tracking') or {}
+        if _engine().__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
+            return jsonify({
+                'error': 'Live market universe is not ready yet. FinanX did not generate a suggestion from incomplete tracking data.',
+                'tracking': tracking,
+                'market': market,
+            }), 503
         result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
         return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'market': market, **result})
     except ValueError as exc:
