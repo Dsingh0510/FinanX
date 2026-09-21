@@ -4,3 +4,4 @@ requests>=2.32,<3
 yfinance>=0.2.65
 mcxlib==0.4
 pandas>=2.0
+gunicorn>=23,<24
