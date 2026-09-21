@@ -336,7 +336,6 @@ def update_amfi_metrics() -> dict:
         source_note = 'AMFI official NAV + history'
         if history_error:
             source_note += ' (history fallback used where needed)'
-        set_provider_status('amfi', 'ok', success=True, records=count)
         return {
             'success': count,
             'history_complete': history_complete,
@@ -344,7 +343,6 @@ def update_amfi_metrics() -> dict:
             'history_error': history_error,
         }
     except Exception as exc:
-        set_provider_status('amfi', 'error', error=str(exc), records=0)
         return {'success': 0, 'error': str(exc)}
 
 
