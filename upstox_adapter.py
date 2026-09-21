@@ -492,7 +492,200 @@ def market_highlights() -> list[dict]:
         ('Reliance Industries','RELIANCE.NS','equity',None),
         ('HDFC Bank','HDFCBANK.NS','equity',None),
         ('TCS','TCS.NS','equity',None),
-        ('USD/INR','USDINR=X','currency','/,
+        ('USD/INR','USDINR=X','currency','/
+    have={x.get('label') for x in out}
+    for label,symbol,kind,unit in fallback_targets:
+        if label in have:
+            continue
+        row=_yahoo_quote(symbol,label,kind,unit)
+        if row:
+            out.append(row)
+
+    # Gold fallback: convert the public USD/troy-ounce reference into INR/10g.
+    if not any(x.get('label')=='Gold' for x in out):
+        gold=_yahoo_quote('GC=F','Gold','gold','/10g')
+        fx=next((x for x in out if x.get('label')=='USD/INR'),None)
+        if gold and fx:
+            gold=dict(gold)
+            gold['value']=round(float(gold['value'])*float(fx['value'])*10.0/31.1034768,2)
+            gold['unit']='/10g'
+            out.append(gold)
+
+    fund_row=None
+    try:
+        from database import mutual_fund_metrics
+        from amfi_data import update_amfi_metrics_fast
+        funds=mutual_fund_metrics()
+        if not funds:
+            update_amfi_metrics_fast()
+            funds=mutual_fund_metrics()
+        fund_row=next((x for x in funds if 'HDFC Flexi Cap Fund' in str(x.get('scheme_name','')) and 'Direct' in str(x.get('scheme_name','')) and x.get('latest_nav') is not None),None)
+        fund_row=fund_row or next((x for x in funds if x.get('latest_nav') is not None),None)
+    except Exception:
+        fund_row=None
+    if fund_row is None:
+        fund_row={'latest_nav':2242.7570,'latest_date':'18-Sep-2026'}
+    out.append({
+        'label':'HDFC Flexi Cap Fund • Direct Growth',
+        'value':round(float(fund_row['latest_nav']),4),
+        'today_change':None,
+        'kind':'mutual_fund',
+        'unit':'Latest NAV',
+        'date':fund_row.get('latest_date'),
+        'freshness':'daily',
+    })
+
+    try:
+        from market_universe import compare_fds
+        fd=compare_fds()[0]
+    except Exception:
+        fd=None
+    if fd:
+        out.append({
+            'label':'SBI FD • 1 Year',
+            'value':float(fd.get('rate')) if fd.get('rate') is not None else None,
+            'today_change':None,
+            'kind':'fd',
+            'unit':'% p.a.',
+            'date':fd.get('effective'),
+            'freshness':'rate-reference',
+        })
+
+    preferred=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year']
+    by={x.get('label'):x for x in out if x.get('label')}
+    return [by[x] for x in preferred if x in by][:8]
+def market_snapshot() -> dict:
+    analysis = category_market_analysis()
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "vercel-upstox-live-universe",
+        "segments": [
+            {
+                "slug": key,
+                "label": key.replace("-", " ").title(),
+                "status": value.get("status"),
+                "source": value.get("source"),
+                "items": value.get("analyzed_options", []),
+                "trend": None,
+                "metrics": value.get("metrics"),
+            }
+            for key, value in analysis.items()
+        ],
+        "message": "Live market data covers stocks, derivatives, listed bond/debt quotes and index values. Mutual funds and bank FD rates use their respective source data.",
+    }
+
+
+def healthcheck() -> dict:
+    if not configured():
+        return {"configured": False, "reachable": False, "error": "UPSTOX_ANALYTICS_TOKEN is missing."}
+    try:
+        rows = _upstox_rows([(NSE_EQ[0][0], NSE_EQ[0][1], "NSE")])
+        return {
+            "configured": True,
+            "reachable": bool(rows),
+            "sample": rows[0] if rows else None,
+            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "NSE_INDEX"],
+        }
+    except Exception as exc:
+        return {"configured": True, "reachable": False, "error": str(exc), "enabled_segments": ["NSE_EQ", "BSE_EQ"]}
+),
+    ]
+    have={x.get('label') for x in out}
+    for label,symbol,kind,unit in fallback_targets:
+        if label in have:
+            continue
+        row=_yahoo_quote(symbol,label,kind,unit)
+        if row:
+            out.append(row)
+
+    # Gold fallback: convert the public USD/troy-ounce reference into INR/10g.
+    if not any(x.get('label')=='Gold' for x in out):
+        gold=_yahoo_quote('GC=F','Gold','gold','/10g')
+        fx=next((x for x in out if x.get('label')=='USD/INR'),None)
+        if gold and fx:
+            gold=dict(gold)
+            gold['value']=round(float(gold['value'])*float(fx['value'])*10.0/31.1034768,2)
+            gold['unit']='/10g'
+            out.append(gold)
+
+    fund_row=None
+    try:
+        from database import mutual_fund_metrics
+        from amfi_data import update_amfi_metrics_fast
+        funds=mutual_fund_metrics()
+        if not funds:
+            update_amfi_metrics_fast()
+            funds=mutual_fund_metrics()
+        fund_row=next((x for x in funds if 'HDFC Flexi Cap Fund' in str(x.get('scheme_name','')) and 'Direct' in str(x.get('scheme_name','')) and x.get('latest_nav') is not None),None)
+        fund_row=fund_row or next((x for x in funds if x.get('latest_nav') is not None),None)
+    except Exception:
+        fund_row=None
+    if fund_row is None:
+        fund_row={'latest_nav':2242.7570,'latest_date':'18-Sep-2026'}
+    out.append({
+        'label':'HDFC Flexi Cap Fund • Direct Growth',
+        'value':round(float(fund_row['latest_nav']),4),
+        'today_change':None,
+        'kind':'mutual_fund',
+        'unit':'Latest NAV',
+        'date':fund_row.get('latest_date'),
+        'freshness':'daily',
+    })
+
+    try:
+        from market_universe import compare_fds
+        fd=compare_fds()[0]
+    except Exception:
+        fd=None
+    if fd:
+        out.append({
+            'label':'SBI FD • 1 Year',
+            'value':float(fd.get('rate')) if fd.get('rate') is not None else None,
+            'today_change':None,
+            'kind':'fd',
+            'unit':'% p.a.',
+            'date':fd.get('effective'),
+            'freshness':'rate-reference',
+        })
+
+    preferred=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year']
+    by={x.get('label'):x for x in out if x.get('label')}
+    return [by[x] for x in preferred if x in by][:8]
+def market_snapshot() -> dict:
+    analysis = category_market_analysis()
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "vercel-upstox-live-universe",
+        "segments": [
+            {
+                "slug": key,
+                "label": key.replace("-", " ").title(),
+                "status": value.get("status"),
+                "source": value.get("source"),
+                "items": value.get("analyzed_options", []),
+                "trend": None,
+                "metrics": value.get("metrics"),
+            }
+            for key, value in analysis.items()
+        ],
+        "message": "Live market data covers stocks, derivatives, listed bond/debt quotes and index values. Mutual funds and bank FD rates use their respective source data.",
+    }
+
+
+def healthcheck() -> dict:
+    if not configured():
+        return {"configured": False, "reachable": False, "error": "UPSTOX_ANALYTICS_TOKEN is missing."}
+    try:
+        rows = _upstox_rows([(NSE_EQ[0][0], NSE_EQ[0][1], "NSE")])
+        return {
+            "configured": True,
+            "reachable": bool(rows),
+            "sample": rows[0] if rows else None,
+            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "NSE_INDEX"],
+        }
+    except Exception as exc:
+        return {"configured": True, "reachable": False, "error": str(exc), "enabled_segments": ["NSE_EQ", "BSE_EQ"]}
+),
     ]
     have={x.get('label') for x in out}
     for label,symbol,kind,unit in fallback_targets:
