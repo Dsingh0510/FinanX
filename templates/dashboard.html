@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>8 market values at a glance: live Upstox indices/equities plus Gold and USD/INR reference values.</p>
+          <p>8 live/reference market values at a glance across indices, stocks, a mutual fund NAV and a bank FD rate.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -88,7 +88,7 @@
             <div class="analysis-box" id="analysis-box">
               <div class="mini-label">MARKET ANALYSIS • YoY / 3Y CAGR / 5Y CAGR</div>
               <h4>Market performance</h4>
-              <p id="analysis-explanation">Before generating a suggestion, FinanX refreshes its tracked universe: up to 100 NSE stocks, 100 F&O contracts, 100 mutual funds, up to 50 listed bond/debt instruments and multiple bank FD entries. It then uses the available historical and live signals alongside your risk, goal, liquidity and horizon.</p>
+              <p id="analysis-explanation">Before generating a suggestion, FinanX refreshes its tracked universe across stocks, F&O, mutual funds, listed bonds/debt and bank FDs. It then combines historical and current signals with your risk, goal, liquidity and horizon.</p>
               <div id="ranked-list" class="ranked-list"></div>
               <div class="scenario-list" id="scenario-list"></div>
               <div class="analysis-note">Live market signals can change quickly. FinanX uses them as one input; your risk, horizon and liquidity remain more important than short-term price movement.</div>
@@ -101,7 +101,7 @@
     </section>
 
     <section class="section" id="learn">
-      <div class="section-head"><div><div class="eyebrow">02 — LEARN & TRACKING</div><h2>Understand what you are investing in.</h2><p>Open Info on any segment to see the actual instruments FinanX tracks in the backend before building the distribution.</p></div></div>
+      <div class="section-head"><div><div class="eyebrow">02 — LEARN</div><h2>Understand what you are investing in.</h2><p>Simple explanations of what each segment is and how it works.</p></div></div>
       <div class="learn-grid" id="learn-grid">
         {% for a in assets %}
         <article class="learn-card" data-slug="{{ a.slug }}">
@@ -111,19 +111,6 @@
           <div class="learn-bottom"><button class="info-btn" data-slug="{{ a.slug }}">Learn ↗</button></div>
         </article>
         {% endfor %}
-      </div>
-    </section>
-
-    <section class="section tracking-section" id="tracking">
-      <div class="section-head">
-        <div>
-          <div class="eyebrow">FINANX TRACKING COVERAGE</div>
-          <h2>What FinanX checks before the distribution.</h2>
-          <p id="tracking-summary-text">Loading tracked universe…</p>
-        </div>
-      </div>
-      <div class="tracking-grid" id="tracking-grid">
-        <div class="tracking-loading">Loading tracking coverage…</div>
       </div>
     </section>
 
@@ -153,10 +140,6 @@
       <div><b>What it is</b><span id="modal-what"></span></div>
       <div><b>How it works</b><span id="modal-how"></span></div>
     </div>
-    <div class="tracked-scope" id="modal-tracking">
-      <div class="tracked-scope-head"><div><b>What FinanX tracks for this segment</b><span>These are the entities FinanX is configured to track and, when live data is available, the live universe checked before market-adjusted analysis.</span></div><span class="tracked-count" id="modal-tracking-count">Loading…</span></div>
-      <div class="tracked-source" id="modal-tracking-source"></div>
-      <div class="tracked-list" id="modal-tracking-list"><div class="tracked-empty">Loading tracked universe…</div></div>
     </div>
   </div>
 </div>
@@ -180,85 +163,19 @@ function renderLearn(){
   document.querySelectorAll('.info-btn').forEach(btn=>btn.addEventListener('click',()=>openModal(btn.dataset.slug)));
 }
 
-async function openModal(slug){
+function openModal(slug){
   const a=assetBySlug[slug]; if(!a)return;
-  document.getElementById('modal-label').textContent=`FINANX INFO • ${a.group}`;
+  document.getElementById('modal-label').textContent='FINANX LEARN • '+a.group;
   document.getElementById('modal-title').textContent=a.name;
   document.getElementById('modal-what').textContent=a.what;
   document.getElementById('modal-how').textContent=a.how || 'FinanX will explain the basic process here.';
-  const panel=document.getElementById('modal-tracking');
-  const count=document.getElementById('modal-tracking-count');
-  const source=document.getElementById('modal-tracking-source');
-  const list=document.getElementById('modal-tracking-list');
-  const mapSlug=slug==='fd'?'fd':slug;
-  const nonTracked = {
-    'gold':'Gold is shown in Market Now as a live/public reference value; it is not currently part of the 100-stock/100-fund backend universe.',
-    'commodities':'Commodities are currently shown as a separate learning category; they are not part of the core tracked universe used for this recommendation build.',
-    'currency':'USD/INR is shown in Market Now as a public/reference value; it is not currently part of the core 100-stock/100-fund tracking universe.',
-  };
   document.getElementById('info-modal').classList.remove('hidden');
-  if(nonTracked[slug]){
-    count.textContent='Reference';
-    source.textContent='';
-    list.innerHTML=`<div class="tracked-empty">${escapeHtml(nonTracked[slug])}</div>`;
-    return;
-  }
-  count.textContent='Loading…';
-  source.textContent='';
-  list.innerHTML='<div class="tracked-empty">Loading tracked universe…</div>';
-  try{
-    const r=await fetch('/api/tracking',{cache:'no-store'});
-    const data=await r.json();
-    const cat=(data.categories||{})[mapSlug];
-    if(!r.ok||!cat) throw new Error(data.message||'Tracking data unavailable');
-    count.textContent=`${cat.tracked}${cat.target?` / ${cat.target}`:''} tracked`;
-    source.textContent=cat.source||'Backend tracking source';
-    if(!cat.names?.length){
-      list.innerHTML='<div class="tracked-empty">No tracked instruments are available for this segment yet.</div>';
-      return;
-    }
-    list.innerHTML=cat.names.map((name,i)=>`<div class="tracked-item"><span>${i+1}</span><b>${escapeHtml(name)}</b></div>`).join('');
-  }catch(e){
-    count.textContent='Unavailable';
-    source.textContent='';
-    list.innerHTML=`<div class="tracked-empty">${escapeHtml(e.message||'Tracking data unavailable. Try again shortly.')}</div>`;
-  }
 }
 
 
 document.getElementById('modal-close').onclick=()=>document.getElementById('info-modal').classList.add('hidden');
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
 
-async function loadTrackingCoverage(){
-  const grid=document.getElementById('tracking-grid');
-  const summary=document.getElementById('tracking-summary-text');
-  if(!grid) return;
-  try{
-    const r=await fetch('/api/tracking',{cache:'no-store'});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.message||'Tracking data unavailable');
-    const order=[['stocks','Stocks'],['fno','F&O'],['mutual-funds','Mutual Funds'],['bonds','Bonds / Debt'],['fd','Bank FDs']];
-    summary.textContent=data.live_quotes_configured
-      ? 'Live universe is active. Open Info on each segment to see every tracked entity.'
-      : 'Configured universe is shown below. Live Upstox quotes need the Vercel token to be enabled.';
-    grid.innerHTML=order.map(([slug,label])=>{
-      const c=(data.categories||{})[slug]||{};
-      const live=c.mode==='live quotes';
-      return `<article class="tracking-card">
-        <div class="tracking-card-top"><span>${escapeHtml(label)}</span><span class="tracking-status ${live?'live':'configured'}">${live?'LIVE':'CONFIGURED'}</span></div>
-        <strong>${Number(c.tracked||0)}${c.target?` / ${c.target}`:''}</strong>
-        <small>${escapeHtml(c.source||'Backend tracking')}</small>
-        <button type="button" class="tracking-view-btn" data-slug="${escapeHtml(slug)}">View all tracked →</button>
-      </article>`;
-    }).join('');
-    grid.querySelectorAll('.tracking-view-btn').forEach(btn=>{
-      btn.addEventListener('click',()=>openModal(btn.dataset.slug));
-    });
-  }catch(e){
-    summary.textContent='Tracking coverage is temporarily unavailable.';
-    grid.innerHTML=`<div class="tracking-error">${escapeHtml(e.message||'Try again shortly.')}</div>`;
-  }
-}
 
 async function createPlan(e){
  e.preventDefault();
@@ -299,10 +216,9 @@ async function createPlan(e){
      document.getElementById('ranked-list').innerHTML=`<div class="market-analysis-head"><span>Investment segment</span><span>YoY</span><span>3Y</span><span>5Y</span></div>` + rows.map((r)=>{
        const fmt=v=>v==null?'Not enough data':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
        const cls=v=>v==null?'pending':(v>=0?'positive':'negative');
-       const tracked=(r.tracked_options||[]).map(x=>x.symbol?`${x.symbol} — ${x.name}`:x.name).filter(Boolean);
        return `<div class="analysis-row">
          <div class="analysis-asset">
-           <div class="asset-name-line"><strong>${escapeHtml(r.asset)}</strong><button class="tracked-btn" type="button" data-title="${escapeHtml(r.asset)}" data-items="${escapeHtml(JSON.stringify(tracked))}" aria-label="Show tracked options">i</button></div>
+           <div class="asset-name-line"><strong>${escapeHtml(r.asset)}</strong><button class="tracked-btn" type="button" data-title="${escapeHtml(r.asset)}" data-slug="${escapeHtml(r.slug)}" aria-label="Show tracked options">i</button></div>
            <small>${escapeHtml(r.basis||'planning estimate')}</small>
          </div>
          <b class="${cls(r.yoy_return)}">${fmt(r.yoy_return)}</b>
@@ -310,7 +226,7 @@ async function createPlan(e){
          <b class="${cls(r.five_year_return)}">${fmt(r.five_year_return)}</b>
        </div>`;
      }).join('');
-     document.querySelectorAll('.tracked-btn').forEach(btn=>btn.addEventListener('click',()=>openTrackedModal(btn.dataset.title, btn.dataset.items)));
+     document.querySelectorAll('.tracked-btn').forEach(btn=>btn.addEventListener('click',()=>openTrackedModal(btn.dataset.title, btn.dataset.slug)));
      const scenarios=analysis.scenario_comparison||[];
      document.getElementById('scenario-list').innerHTML=`<div class="options-head"><span>Allocation options</span><small>3 options within your ${escapeHtml(analysis.risk)} risk level</small></div>` + scenarios.map((sc,idx)=>{const alloc=(sc.allocation_breakup||[]).map(a=>{const info=assetBySlug[a.slug]; return `${escapeHtml(info?.short||a.slug)} ${Number(a.percent).toFixed(0)}%`;}).join(' • '); return `<div class="scenario-card ${sc.is_selected?'selected':''}"><div class="scenario-card-top"><div><span class="option-label">OPTION ${idx+1}</span><strong>${escapeHtml(sc.name.replace(/^Option\s*\d+\s*[—-]?\s*/i,''))}</strong><small>${escapeHtml(sc.description)}</small></div>${sc.is_selected?'<span class="recommended-badge">Suggested</span>':''}</div><div class="scenario-metrics"><div><span>Annual estimate</span><b>${Number(sc.annual_return_estimate||0).toFixed(1)}%</b></div><div><span>Value after ${analysis.horizon} years</span><b>₹${money.format(sc.projected_value)}</b></div></div><div class="scenario-allocation">${alloc}</div></div>`;}).join('');
      document.getElementById('plan-explanation').textContent=analysis.explanation;
@@ -377,18 +293,26 @@ async function refreshMarket(){
   }
 }
 
-function openTrackedModal(title, encodedItems){
-  let items=[];
-  try{items=JSON.parse(encodedItems||'[]')}catch(e){items=[]}
-  document.getElementById('tracked-modal-title').textContent=title;
+async function openTrackedModal(title, slug){
+  const modal=document.getElementById('tracked-modal');
   const list=document.getElementById('tracked-modal-list');
-  if(!items.length){
-    list.innerHTML='<div class="tracked-empty">No tracked instruments are currently available for this segment.</div>';
-  }else{
-    list.innerHTML=items.map((x,i)=>`<div class="tracked-item"><span>${i+1}</span><b>${escapeHtml(x)}</b></div>`).join('');
+  document.getElementById('tracked-modal-title').textContent=title;
+  list.innerHTML='<div class="tracked-empty">Loading all tracked entities…</div>';
+  modal.classList.remove('hidden');
+  try{
+    const r=await fetch('/api/tracking?category='+encodeURIComponent(slug),{cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.message||'Tracking data unavailable');
+    const cat=data.category || ((data.categories||{})[slug]);
+    if(!cat || !Array.isArray(cat.names)) throw new Error('No tracked entities are available for this segment.');
+    const count=cat.tracked!=null ? (cat.tracked + (cat.target ? ' / '+cat.target : '') + ' tracked') : 'Tracked entities';
+    list.innerHTML='<div class="tracked-list-head"><span>'+escapeHtml(count)+'</span><small>'+escapeHtml(cat.source||'Backend tracking')+'</small></div>'+
+      cat.names.map((name,i)=>'<div class="tracked-item"><span>'+(i+1)+'</span><b>'+escapeHtml(name)+'</b></div>').join('');
+  }catch(e){
+    list.innerHTML='<div class="tracked-empty">'+escapeHtml(e.message||'Tracking data unavailable. Try again shortly.')+'</div>';
   }
-  document.getElementById('tracked-modal').classList.remove('hidden');
 }
+
 
 document.getElementById('tracked-modal-close').onclick=()=>document.getElementById('tracked-modal').classList.add('hidden');
 document.getElementById('tracked-modal').addEventListener('click',e=>{if(e.target.id==='tracked-modal')e.currentTarget.classList.add('hidden')});
