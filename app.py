@@ -219,7 +219,7 @@ def health():
         'status': 'ok',
         'time': datetime.now(timezone.utc).isoformat(),
         'runtime': 'vercel-flask',
-        'market_engine': 'upstox-phase1-with-public-fallback',
+        'market_engine': 'upstox-live-universe-with-public-fallback',
         'upstox': upstox,
     })
 
