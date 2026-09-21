@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 import os
 
-DB_PATH = Path(os.getenv("FINANX_DB", "finanx.db"))
+# Vercel's deployed filesystem is not a durable writable application directory.
+# Keep the same SQLite schema for the serverless runtime, but place its temporary
+# cache under /tmp. It is intentionally ephemeral; the application also has
+# live/public-data fallbacks so a cold function can rebuild its cache.
+_default_db = "/tmp/finanx.db" if os.getenv("VERCEL") == "1" else "finanx.db"
+DB_PATH = Path(os.getenv("FINANX_DB", _default_db))
 
 
 def utc_now() -> str:
