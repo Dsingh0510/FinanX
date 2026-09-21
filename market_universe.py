@@ -227,7 +227,7 @@ def compare_fds():
     # General-public card rates for a broadly comparable ~1-year tenor.
     # Each entry is tied to an official bank rate page and its effective date.
     return [
-      {"bank":"SBI","tenor":"1 year to <2 years","rate":6.25,"senior_rate":6.75,"effective":"2025-12-15","source":"SBI official retail domestic term-deposit table"},
+      {"bank":"SBI","tenor":"1 year to <2 years","rate":6.25,"senior_rate":6.75,"effective":"2026-06-16","source":"SBI official retail domestic term-deposit table"},
       {"bank":"HDFC Bank","tenor":"1 year to <15 months","rate":6.25,"senior_rate":6.75,"effective":"2026-08-19","source":"HDFC Bank official FD rate page"},
       {"bank":"PNB","tenor":"1 year","rate":6.40,"senior_rate":6.90,"effective":"2025-06-18","source":"PNB official domestic term-deposit table"},
       {"bank":"Canara Bank","tenor":"1 year & above to 1 year 3 months","rate":6.25,"senior_rate":6.75,"effective":"2025-08-07","source":"Canara Bank official deposit interest-rate page"},
