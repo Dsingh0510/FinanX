@@ -155,7 +155,7 @@ def market_compare(segment: str):
 
 @app.get('/api/tracking')
 def tracking():
-    """Expose configured universe and live quote coverage."""
+    """Expose the backend tracking universe and live quote coverage."""
     try:
         import os as _os
         from market_universe import tracking_universe, compare_stocks, compare_fno, compare_bonds, compare_fds
@@ -164,34 +164,31 @@ def tracking():
         catalog = tracking_universe()
         fund_names = tracking_fund_universe(100)
         fd_rows = compare_fds()
-        live = bool(_os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip())
+        live = bool(_os.getenv('UPSTOX_ANALYTICS_TOKEN', '').strip())
 
         if live:
             try:
-                live_rows = compare_stocks()
-                if live_rows:
-                    catalog["stocks"] = [x.get("symbol") or x.get("name") for x in live_rows]
+                rows = compare_stocks()
+                if rows: catalog['stocks'] = [x.get('symbol') or x.get('name') for x in rows]
             except Exception:
                 pass
             try:
-                live_rows = compare_fno()
-                if live_rows:
-                    catalog["fno"] = [x.get("symbol") or x.get("name") for x in live_rows]
+                rows = compare_fno()
+                if rows: catalog['fno'] = [x.get('symbol') or x.get('name') for x in rows]
             except Exception:
                 pass
             try:
-                live_rows = compare_bonds()
-                if live_rows:
-                    catalog["bonds"] = [x.get("symbol") or x.get("name") for x in live_rows]
+                rows = compare_bonds()
+                if rows: catalog['bonds'] = [x.get('symbol') or x.get('name') for x in rows]
             except Exception:
                 pass
 
         configs = {
-            'stocks': ('stocks', 100, 'Upstox live NSE equity quotes'),
-            'fno': ('fno', 100, 'Upstox live NSE F&O quotes'),
-            'mutual-funds': ('mutual-funds', 100, 'AMFI NAV/history'),
-            'bonds': ('bonds', 50, 'Upstox listed bond/debt quotes'),
-            'fd': ('fd', len(fd_rows), 'FinanX bank-rate registry'),
+            'stocks': ('stocks', 100, 'Live equity market quotes'),
+            'fno': ('fno', 100, 'Live derivatives market quotes'),
+            'mutual-funds': ('mutual-funds', 100, 'Daily mutual-fund NAV/history'),
+            'bonds': ('bonds', 50, 'Listed bond/debt market quotes'),
+            'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
         }
 
         categories = {}
@@ -202,29 +199,35 @@ def tracking():
                 names = [f"{x.get('bank')} • {x.get('tenor')}" for x in fd_rows]
             else:
                 names = [str(x) for x in (catalog.get(key) or []) if x]
-
             categories[slug] = {
                 'tracked': min(len(names), target) if target else len(names),
                 'target': target,
                 'source': source,
                 'names': names[:target] if target else names,
-                'mode': 'live quotes' if live and slug in {'stocks','fno','bonds'} else 'configured universe',
+                'mode': 'live' if live and slug in {'stocks','fno','bonds'} else 'configured',
             }
+
+        category=request.args.get('category','').strip()
+        if category:
+            item=categories.get(category)
+            if not item:
+                return jsonify({'status':'error','message':'Unknown tracking category'}), 404
+            return jsonify({
+                'status': 'live' if live else 'configured',
+                'live_quotes_configured': live,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'category': item,
+            })
 
         return jsonify({
             'status': 'live' if live else 'configured',
             'live_quotes_configured': live,
             'updated_at': datetime.now(timezone.utc).isoformat(),
-            'message': (
-                'Live Upstox quote tracking is active.'
-                if live else
-                'The configured tracking universe is available, but live Upstox quotes are not active on this deployment. Configure UPSTOX_ANALYTICS_TOKEN in Vercel.'
-            ),
+            'message': 'Live market data is active.' if live else 'Configured tracking universe is available; live market quotes require the server market token.',
             'categories': categories,
         })
     except Exception as exc:
-        return jsonify({'status': 'error', 'message': str(exc), 'categories': {}}), 500
-
+        return jsonify({'status':'error','message':str(exc),'categories':{}}), 500
 
 @app.get('/api/asset/<slug>')
 def asset(slug: str):
