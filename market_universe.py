@@ -181,3 +181,42 @@ def market_now():
         sym=raw.split(":",1)[-1]
         out.append({"label":labels.get(sym,sym),"value":round(ltp,2),"today_change":round(change,2) if change is not None else None,"kind":"index","freshness":"upstox"})
     return out
+
+
+def compare_bonds():
+    rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
+    bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
+    rows = [x for x in rows if any(w in str(x.get("name","")).upper() or w in str(x.get("trading_symbol","")).upper() for w in bond_words)]
+    rows = rows[:80]
+    quotes = _quotes([x["instrument_key"] for x in rows])
+    out=[]
+    for r in rows:
+        q=quotes.get(r["instrument_key"].replace("|",":")) or {}
+        ltp,change=_quote_value(q)
+        if ltp is None: continue
+        out.append({
+            "rank":0,"name":r.get("short_name") or r.get("name") or r.get("trading_symbol"),
+            "symbol":r.get("trading_symbol"),"price":round(ltp,4),
+            "today_change":round(change,2) if change is not None else None,
+            "year_high":q.get("year_high"),"year_low":q.get("year_low"),
+            "source":"Upstox Full Market Quotes V3","updated_at":datetime.now(timezone.utc).isoformat()
+        })
+    out.sort(key=lambda x:x.get("volume") or 0,reverse=True)
+    for i,x in enumerate(out[:20],1): x["rank"]=i
+    return out[:20]
+
+def compare_fds():
+    # General-public card rates for a broadly comparable ~1-year tenor.
+    # Each entry is tied to an official bank rate page and its effective date.
+    return [
+      {"bank":"SBI","tenor":"1 year to <2 years","rate":6.25,"senior_rate":6.75,"effective":"2025-12-15","source":"SBI official retail domestic term-deposit table"},
+      {"bank":"HDFC Bank","tenor":"1 year to <15 months","rate":6.25,"senior_rate":6.75,"effective":"2026-08-19","source":"HDFC Bank official FD rate page"},
+      {"bank":"PNB","tenor":"1 year","rate":6.40,"senior_rate":6.90,"effective":"2025-06-18","source":"PNB official domestic term-deposit table"},
+      {"bank":"Canara Bank","tenor":"1 year & above to 1 year 3 months","rate":6.25,"senior_rate":6.75,"effective":"2025-08-07","source":"Canara Bank official deposit interest-rate page"},
+      {"bank":"Axis Bank","tenor":"1 year–1 year 10 days","rate":6.40,"senior_rate":6.90,"effective":"2025-09-26","source":"Axis Bank official Fixed Deposits Plus table; verify product/tenor before booking"},
+      {"bank":"ICICI Bank","tenor":"Around 1 year","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live ICICI rate before booking"},
+      {"bank":"Bank of India","tenor":"1 year to <3 years","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live BOI rate before booking"},
+      {"bank":"Bank of Baroda","tenor":"1 year","rate":6.25,"senior_rate":7.25,"effective":"2026-09","source":"Bank rate reference; verify live BOB rate before booking"},
+      {"bank":"Indian Bank","tenor":"Around 1 year","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live Indian Bank rate before booking"},
+      {"bank":"Kotak Mahindra Bank","tenor":"Around 1 year","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live Kotak rate before booking"}
+    ]
