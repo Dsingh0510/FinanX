@@ -252,3 +252,39 @@ def compare_fds():
       {"bank":"Indian Bank","tenor":"Around 1 year","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live Indian Bank rate before booking"},
       {"bank":"Kotak Mahindra Bank","tenor":"Around 1 year","rate":6.25,"senior_rate":6.75,"effective":"2026-09","source":"Bank rate reference; verify live Kotak rate before booking"}
     ]
+
+
+def tracking_universe():
+    """Return configured instrument names without requiring quote authentication."""
+    all_rows = instruments()
+    stocks = _eq_instruments()
+    fno_rows = _fno_instruments()
+    futures = [x for x in fno_rows if x.get("instrument_type") == "FUT"]
+    options = [x for x in fno_rows if x.get("instrument_type") in ("CE", "PE")]
+    fno = futures[:50] + options[:50]
+
+    eq_rows = [
+        x for x in all_rows
+        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
+    ]
+    bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
+    bonds = [
+        x for x in eq_rows
+        if any(
+            word in str(x.get("name", "")).upper() or
+            word in str(x.get("trading_symbol", "")).upper()
+            for word in bond_words
+        )
+    ][:50]
+
+    return {
+        "stocks": [
+            x.get("trading_symbol") or x.get("short_name") or x.get("name")
+            for x in stocks
+        ],
+        "fno": [x.get("trading_symbol") or x.get("name") for x in fno],
+        "bonds": [
+            x.get("trading_symbol") or x.get("short_name") or x.get("name")
+            for x in bonds
+        ],
+    }
