@@ -207,59 +207,207 @@ def _stock_analysis() -> tuple[dict, list[dict]]:
     return metrics, tracked
 
 
+_TRACKING_CACHE: dict[str, tuple[float, dict]] = {}
+_TRACKING_TTL = 15 * 60
+
+
+def _tracking_snapshot() -> dict:
+    """Refresh live universes before the recommendation engine scores categories."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    hit = _TRACKING_CACHE.get("universe")
+    if hit and now_ts - hit[0] < _TRACKING_TTL:
+        return hit[1]
+
+    from market_universe import compare_stocks, compare_fno, compare_bonds, compare_fds
+    from database import mutual_fund_metrics
+    from amfi_data import update_amfi_metrics, category_metrics, bond_proxy_metrics
+
+    stocks = []
+    fno = []
+    bonds = []
+    fds = []
+    funds = mutual_fund_metrics()
+    fund_refresh = None
+
+    try:
+        stocks = compare_stocks()
+    except Exception:
+        pass
+    try:
+        fno = compare_fno()
+    except Exception:
+        pass
+    try:
+        bonds = compare_bonds()
+    except Exception:
+        pass
+    try:
+        fds = compare_fds()
+    except Exception:
+        pass
+
+    if len(funds) < 100:
+        try:
+            fund_refresh = update_amfi_metrics()
+            funds = mutual_fund_metrics()
+        except Exception:
+            pass
+
+    snapshot = {
+        "stocks": stocks[:100],
+        "fno": fno[:100],
+        "bonds": bonds[:50],
+        "fds": fds,
+        "funds": funds[:100],
+        "fund_metrics": category_metrics(),
+        "bond_proxy_metrics": bond_proxy_metrics(),
+        "fund_refresh": fund_refresh,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _TRACKING_CACHE["universe"] = (now_ts, snapshot)
+    return snapshot
+
+
+def _live_breadth(rows: list[dict]) -> float | None:
+    changes = [float(x["today_change"]) for x in rows if x.get("today_change") is not None]
+    if not changes:
+        return None
+    adv = sum(1 for x in changes if x > 0)
+    dec = sum(1 for x in changes if x < 0)
+    flat = len(changes) - adv - dec
+    return round(50 + ((adv - dec) / len(changes)) * 50 + (flat / len(changes)) * 2.5, 1)
+
+
 def category_market_analysis() -> dict:
     now = datetime.now(timezone.utc).isoformat()
     try:
-        stock_metrics, tracked = _stock_analysis()
-        stocks_status = "upstox" if tracked else "unavailable"
+        stock_metrics, historical_tracked = _stock_analysis()
+        stocks_status = "upstox"
     except Exception:
         stock_metrics = {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None}
-        tracked = []
+        historical_tracked = []
         stocks_status = "unavailable"
+
+    try:
+        tracking = _tracking_snapshot()
+    except Exception as exc:
+        tracking = {"stocks": [], "fno": [], "bonds": [], "funds": [], "fds": [], "fund_metrics": {}, "bond_proxy_metrics": {}, "updated_at": now, "tracking_error": str(exc)}
+
+    stock_rows = tracking.get("stocks", [])
+    fno_rows = tracking.get("fno", [])
+    bond_rows = tracking.get("bonds", [])
+    fund_rows = tracking.get("funds", [])
+    fd_rows = tracking.get("fds", [])
+
+    live_breadth = _live_breadth(stock_rows)
+    if stock_rows:
+        stock_metrics = dict(stock_metrics)
+        stock_metrics.update({
+            "sample_size": len(stock_rows),
+            "historical_sample_size": stock_metrics.get("sample_size"),
+            "live_sample_size": len(stock_rows),
+            "live_breadth_score": live_breadth,
+            "advancers": sum(1 for x in stock_rows if (x.get("today_change") or 0) > 0),
+            "decliners": sum(1 for x in stock_rows if (x.get("today_change") or 0) < 0),
+        })
+
+    fund_metrics = dict(tracking.get("fund_metrics") or {})
+    if fund_rows:
+        fund_metrics["available"] = bool(fund_metrics.get("available"))
+        fund_metrics["sample_size"] = len(fund_rows)
+        fund_metrics["live_sample_size"] = len(fund_rows)
+
+    bond_metrics = dict(tracking.get("bond_proxy_metrics") or {})
+    if not bond_metrics:
+        bond_metrics = {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None}
+    bond_metrics["live_sample_size"] = len(bond_rows)
+    bond_metrics["sample_size"] = max(int(bond_metrics.get("sample_size") or 0), len(bond_rows))
+
+    fd_values = [float(x["rate"]) for x in fd_rows if x.get("rate") is not None]
+    fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
+    fd_metrics = {
+        "available": bool(fd_values),
+        "sample_size": len(fd_rows),
+        "return_1y": fd_rate,
+        "return_3y": fd_rate,
+        "return_5y": fd_rate,
+        "live_sample_size": len(fd_rows),
+        "rate_average": fd_rate,
+    }
 
     result = {
         "fd": {
-            "status": "estimate", "source": "Educational fixed-rate assumption",
-            "metrics": {"available": True, "sample_size": 1, "return_1y": 6.5, "return_3y": 6.5, "return_5y": 6.5},
-            "analyzed_options": [{"name": "Representative bank FD rate"}], "updated_at": now,
+            "status": "tracked",
+            "source": "FinanX bank-rate registry (verify before booking)",
+            "metrics": fd_metrics,
+            "analyzed_options": fd_rows,
+            "updated_at": now,
         },
         "bonds": {
-            "status": "estimate", "source": "Educational bond-return assumption",
-            "metrics": {"available": True, "sample_size": 1, "return_1y": 7.0, "return_3y": 7.0, "return_5y": 7.0},
-            "analyzed_options": [{"name": "Representative bond proxy"}], "updated_at": now,
+            "status": "upstox+amfi-proxy",
+            "source": "Upstox listed bond/debt quotes + AMFI bond-fund proxy history",
+            "metrics": bond_metrics,
+            "analyzed_options": bond_rows,
+            "updated_at": now,
         },
         "mutual-funds": {
-            "status": "not_configured", "source": "AMFI module can be connected later.",
-            "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Mutual funds — integration pending"}], "updated_at": now,
+            "status": "amfi",
+            "source": "AMFI official NAV/history",
+            "metrics": fund_metrics,
+            "analyzed_options": fund_rows,
+            "updated_at": now,
         },
         "gold": {
-            "status": "not_configured", "source": "Commodity segment is not enabled in Phase 1.",
+            "status": "not_configured",
+            "source": "Market Now only; not used as a live instrument suggestion in this build.",
             "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Gold — integration pending"}], "updated_at": now,
+            "analyzed_options": [{"name": "Gold — tracked in Market Now"}],
+            "updated_at": now,
         },
         "commodities": {
-            "status": "not_configured", "source": "Commodity segment is not enabled in Phase 1.",
+            "status": "not_configured",
+            "source": "Market Now only; not used as a live instrument suggestion in this build.",
             "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Commodities — integration pending"}], "updated_at": now,
+            "analyzed_options": [{"name": "Commodities — tracked separately"}],
+            "updated_at": now,
         },
         "currency": {
-            "status": "not_configured", "source": "Currency segment is not enabled in Phase 1.",
+            "status": "not_configured",
+            "source": "Market Now only; not used as a live instrument suggestion in this build.",
             "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Currency — integration pending"}], "updated_at": now,
+            "analyzed_options": [{"name": "USD/INR — tracked in Market Now"}],
+            "updated_at": now,
         },
         "fno": {
-            "status": "not_configured", "source": "F&O segment is not enabled in Phase 1.",
-            "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "F&O — integration pending"}], "updated_at": now,
+            "status": "upstox",
+            "source": "Upstox Full Market Quotes V3",
+            "metrics": {
+                "available": False,
+                "sample_size": len(fno_rows),
+                "return_1y": None, "return_3y": None, "return_5y": None,
+                "live_sample_size": len(fno_rows),
+                "active_contracts": len(fno_rows),
+            },
+            "analyzed_options": fno_rows,
+            "updated_at": now,
         },
         "stocks": {
-            "status": stocks_status, "source": "Upstox Historical Candle V3",
-            "metrics": stock_metrics, "analyzed_options": tracked, "updated_at": now,
+            "status": stocks_status,
+            "source": "Upstox Historical Candle V3 + live Market Quote V3",
+            "metrics": stock_metrics,
+            "analyzed_options": stock_rows if stock_rows else historical_tracked,
+            "updated_at": now,
         },
     }
+    result["_tracking"] = {
+        "stocks_requested": 100, "stocks_tracked": len(stock_rows),
+        "fno_requested": 100, "fno_tracked": len(fno_rows),
+        "funds_requested": 100, "funds_tracked": len(fund_rows),
+        "bonds_requested": 50, "bonds_tracked": len(bond_rows),
+        "fds_tracked": len(fd_rows),
+        "updated_at": tracking.get("updated_at", now),
+    }
     return result
-
 
 def _upstox_rows(keys: list[tuple[str, str, str]]) -> list[dict]:
     if not keys:
@@ -300,32 +448,26 @@ def market_highlights() -> list[dict]:
         out.extend(market_now())
     except Exception:
         pass
-    if configured():
-        try:
-            out.extend(_upstox_rows([(k, n, "NSE") for k, n in NSE_EQ] + [(k, n, "BSE") for k, n in BSE_EQ]))
-        except Exception:
-            pass
 
-    # These keep the existing hero cards populated without claiming they are
-    # Upstox-enabled Phase-1 segments.
-    nifty = _yahoo_quote("^NSEI", "NIFTY 50", "index")
     usd = _yahoo_quote("USDINR=X", "USD/INR", "currency")
-    gold = _yahoo_quote("GC=F", "Gold", "gold", "₹/10g")
-    if nifty:
+    gold = _yahoo_quote("GC=F", "Gold", "gold", "USD/troy oz")
+    nifty = _yahoo_quote("^NSEI", "NIFTY 50", "index")
+
+    if gold and usd and gold.get("value") is not None and usd.get("value") is not None:
+        gold = dict(gold)
+        gold["value"] = round(float(gold["value"]) * float(usd["value"]) * 10.0 / 31.1034768, 2)
+        gold["unit"] = "₹/10g"
+        gold["freshness"] = "public-reference"
+    else:
+        gold = None
+
+    if nifty and not any(x.get("label") == "NIFTY 50" for x in out):
         out.insert(0, nifty)
     if gold:
-        out.insert(1 if out else 0, gold)
+        out.append(gold)
     if usd:
-        out.insert(2 if len(out) >= 2 else len(out), usd)
-
-    if not out:
-        out = [
-            {"label": "NIFTY 50", "value": 23346.40, "today_change": None, "kind": "index", "freshness": "reference"},
-            {"label": "Gold", "value": 133633.13, "today_change": None, "kind": "gold", "unit": "₹/10g", "freshness": "reference"},
-            {"label": "USD/INR", "value": 95.93, "today_change": None, "kind": "currency", "freshness": "reference"},
-        ]
+        out.append(usd)
     return out
-
 
 def market_snapshot() -> dict:
     analysis = category_market_analysis()
