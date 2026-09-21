@@ -484,7 +484,7 @@ def market_snapshot() -> dict:
     analysis = category_market_analysis()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": "vercel-upstox-phase1",
+        "mode": "vercel-upstox-live-universe",
         "segments": [
             {
                 "slug": key,
@@ -497,7 +497,7 @@ def market_snapshot() -> dict:
             }
             for key, value in analysis.items()
         ],
-        "message": "Phase 1 uses Upstox for NSE/BSE equities. Other Upstox segments remain disabled.",
+        "message": "Upstox is used for live NSE stocks, NSE F&O, listed bond/debt quotes and NSE index values. Mutual funds and bank FD rates use their respective source data.",
     )
 
 
@@ -510,7 +510,7 @@ def healthcheck() -> dict:
             "configured": True,
             "reachable": bool(rows),
             "sample": rows[0] if rows else None,
-            "enabled_segments": ["NSE_EQ", "BSE_EQ"],
+            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "NSE_INDEX"],
         }
     except Exception as exc:
         return {"configured": True, "reachable": False, "error": str(exc), "enabled_segments": ["NSE_EQ", "BSE_EQ"]}
