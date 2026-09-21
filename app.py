@@ -9,6 +9,9 @@ from allocation_engine import ASSET_INFO, build_portfolio
 from database import init_database
 from recommendation_engine import build_market_adjusted_plan
 import vercel_market
+import market_universe
+from amfi_data import update_amfi_metrics
+from database import mutual_fund_metrics
 
 app = Flask(__name__)
 init_database(app)
@@ -100,6 +103,43 @@ def market_highlights():
 def refresh_market():
     return jsonify({'success': 1, 'message': 'Market data refreshes per request on Vercel.', 'updated_at': datetime.now(timezone.utc).isoformat()})
 
+
+
+_COMPARE_CACHE = {}
+def _compare_cached(segment, factory, ttl=900):
+    now = datetime.now(timezone.utc).timestamp()
+    hit = _COMPARE_CACHE.get(segment)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    value = factory()
+    _COMPARE_CACHE[segment] = (now, value)
+    return value
+
+@app.get('/api/market/compare/<segment>')
+def market_compare(segment: str):
+    """Return live comparison tables. Upstox quotes are exchange snapshots;
+    AMFI supplies mutual-fund NAV/history; FD rates are labelled by source/date."""
+    try:
+        if segment == 'stocks':
+            rows = _compare_cached('stocks', market_universe.compare_stocks)
+            return jsonify({'segment':'stocks','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
+        if segment == 'fno':
+            rows = _compare_cached('fno', market_universe.compare_fno)
+            return jsonify({'segment':'fno','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
+        if segment == 'funds':
+            refreshed = _compare_cached('funds-refresh', update_amfi_metrics, ttl=1800)
+            rows = mutual_fund_metrics()
+            rows = [r for r in rows if not str(r.get('source','')).startswith('Bond proxy')][:100]
+            return jsonify({'segment':'funds','count':len(rows),'source':'AMFI official NAV/history','refresh':refreshed,'items':rows})
+        if segment == 'bonds':
+            rows = _compare_cached('bonds', market_universe.compare_bonds)
+            return jsonify({'segment':'bonds','count':len(rows),'source':'Upstox exchange quotes for listed bond/debt ETFs','items':rows})
+        if segment == 'fd':
+            rows = _compare_cached('fd', market_universe.compare_fds, ttl=3600)
+            return jsonify({'segment':'fd','count':len(rows),'source':'Official bank rate pages; general public, ~1-year tenor','items':rows})
+        return jsonify({'error':'Unknown comparison segment'}), 404
+    except Exception as exc:
+        return jsonify({'segment':segment,'count':0,'items':[],'error':str(exc)}), 500
 
 @app.get('/api/asset/<slug>')
 def asset(slug: str):
