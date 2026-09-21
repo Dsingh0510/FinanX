@@ -94,7 +94,13 @@ def score_categories(user: Dict, market_segments: Dict[str, Dict]) -> List[Dict]
         base=0.42*_risk_fit(cat,risk)+0.24*_horizon_fit(cat,horizon)+0.14*_liquidity_fit(cat,liquidity)+0.20*_goal_fit(cat,goal)
         metrics=market_segments.get(cat,{}).get('metrics') or {}
         hist=_historical_score(metrics,horizon)
-        score=base if hist is None else 0.70*base+0.30*hist
+        live_signal=metrics.get('live_breadth_score')
+        if hist is None:
+            score = base if live_signal is None else 0.90*base + 0.10*float(live_signal)
+        elif live_signal is None:
+            score = 0.70*base + 0.30*hist
+        else:
+            score = 0.60*base + 0.30*hist + 0.10*float(live_signal)
         cap=None
         if cat=='fno': cap=0 if risk!='high' else 0.02
         elif cat=='currency' and risk=='low': cap=0
