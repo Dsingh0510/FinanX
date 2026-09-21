@@ -245,26 +245,7 @@ def market_now():
             'value':round(ltp,4 if kind in ('currency','commodity') else 2),
             'today_change':round(change,2) if change is not None else None,
             'kind':kind,
-            'unit':'/10g' if kind=='commodity' else '/        })
-    return out[:8]
-
-def compare_bonds():
-    rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
-    bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
-    rows = [x for x in rows if any(w in str(x.get("name","")).upper() or w in str(x.get("trading_symbol","")).upper() for w in bond_words)]
-    rows = rows[:160]
-    quotes = _quotes([x["instrument_key"] for x in rows])
-    out=[]
-    for r in rows:
-        q=quotes.get(r["instrument_key"].replace("|",":")) or {}
-        ltp,change=_quote_value(q)
-        if ltp is None: continue
-        out.append({
-            "rank":0,"name":r.get("short_name") or r.get("name") or r.get("trading_symbol"),
-            "symbol":r.get("trading_symbol"),"price":round(ltp,4),
-            "today_change":round(change,2) if change is not None else None,
-            "year_high":q.get("year_high"),"year_low":q.get("year_low"),
-            "source":"Upstox Full Market Quotes V3","updated_at":datetime.now(timezone.utc).isoformat()
+            'unit':'/10g' if kind=='commodity' else '/$' if kind=='currency' else None,
         })
     out.sort(key=lambda x:x.get("volume") or 0,reverse=True)
     for i,x in enumerate(out[:50],1): x["rank"]=i
