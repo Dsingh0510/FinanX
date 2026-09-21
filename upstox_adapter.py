@@ -467,7 +467,7 @@ def market_highlights() -> list[dict]:
     if gold and usd and gold.get("value") is not None and usd.get("value") is not None:
         gold = dict(gold)
         gold["value"] = round(float(gold["value"]) * float(usd["value"]) * 10.0 / 31.1034768, 2)
-        gold["unit"] = "₹/10g"
+        gold["unit"] = "/10g"
         gold["freshness"] = "public-reference"
     else:
         gold = None
