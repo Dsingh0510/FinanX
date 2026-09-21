@@ -545,8 +545,8 @@ def market_snapshot() -> dict:
             }
             for key, value in analysis.items()
         ],
-        "message": "Upstox is used for live NSE stocks, NSE F&O, listed bond/debt quotes and NSE index values. Mutual funds and bank FD rates use their respective source data.",
-    )
+        "message": "Live market data covers stocks, derivatives, listed bond/debt quotes and index values. Mutual funds and bank FD rates use their respective source data.",
+    }
 
 
 def healthcheck() -> dict:
