@@ -176,44 +176,30 @@ def compare_fno():
     return result[:100]
 
 def market_now():
-    """Return eight primary Market Now cards.
-
-    The NSE index/equity values use direct Upstox instrument keys so the board
-    does not depend on the instrument-master lookup succeeding first.
-    Gold and USD/INR remain public-reference values and are labelled by the UI.
-    """
+    """Return six primary live market cards when the server market feed is connected."""
     targets = [
-        ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
-        ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
-        ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
-        ("NIFTY Midcap 100", "NSE_INDEX|Nifty Midcap 100", "index"),
-        ("Reliance Industries", "NSE_EQ|INE002A01018", "equity"),
-        ("HDFC Bank", "NSE_EQ|INE040A01034", "equity"),
+        ('NIFTY 50', 'NSE_INDEX|Nifty 50', 'index'),
+        ('NIFTY Bank', 'NSE_INDEX|Nifty Bank', 'index'),
+        ('NIFTY IT', 'NSE_INDEX|Nifty IT', 'index'),
+        ('Reliance Industries', 'NSE_EQ|INE002A01018', 'equity'),
+        ('HDFC Bank', 'NSE_EQ|INE040A01034', 'equity'),
+        ('TCS', 'NSE_EQ|INE467B01029', 'equity'),
     ]
-    data = {}
-    try:
-        data = _quotes([key for _, key, _ in targets])
-    except Exception:
-        data = {}
-
+    data = _quotes([key for _, key, _ in targets])
     out = []
     for label, key, kind in targets:
-        q = data.get(key.replace("|", ":")) or data.get(key) or {}
-        ltp, change = _quote_value(q)
+        q=data.get(key.replace('|', ':')) or data.get(key) or {}
+        ltp,change=_quote_value(q)
         if ltp is None:
             continue
         out.append({
-            "label": label,
-            "value": round(ltp, 2),
-            "today_change": round(change, 2) if change is not None else None,
-            "kind": kind,
-            "freshness": "upstox",
-            "source": "Upstox Market Quote V3",
+            'label':label,
+            'value':round(ltp,2),
+            'today_change':round(change,2) if change is not None else None,
+            'kind':kind,
+            'freshness':'live',
         })
-
-    # Keep the cards in the intended display order.
     return out
-
 
 def compare_bonds():
     rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
