@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import gzip
+import io
+import os
+from datetime import date, datetime, timezone
+import requests
+
+BASE = "https://api.upstox.com/v3"
+INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+_CACHE = {}
+TTL = 15 * 60
+
+def _headers():
+    token = os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("UPSTOX_ANALYTICS_TOKEN is not configured.")
+    return {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+
+def _get(url, params=None, timeout=15):
+    r = requests.get(url, headers=_headers(), params=params, timeout=timeout)
+    r.raise_for_status()
+    payload = r.json()
+    if payload.get("status") not in (None, "success"):
+        raise RuntimeError(str(payload.get("message") or "Upstox API error"))
+    return payload
+
+def _cache_get(key, factory):
+    now = datetime.now(timezone.utc).timestamp()
+    hit = _CACHE.get(key)
+    if hit and now - hit[0] < TTL:
+        return hit[1]
+    value = factory()
+    _CACHE[key] = (now, value)
+    return value
+
+def instruments():
+    def load():
+        r = requests.get(INSTRUMENTS_URL, headers={"User-Agent":"FinanX/1.0"}, timeout=25)
+        r.raise_for_status()
+        raw = gzip.GzipFile(fileobj=io.BytesIO(r.content)).read()
+        import json
+        return json.loads(raw.decode("utf-8"))
+    return _cache_get("nse-instruments", load)
+
+def _quotes(keys):
+    if not keys:
+        return {}
+    out = {}
+    for i in range(0, len(keys), 500):
+        payload = _get(f"{BASE}/market-quote/quotes", {"instrument_key": ",".join(keys[i:i+500])}, timeout=15)
+        out.update(payload.get("data") or {})
+    return out
+
+def _quote_value(row):
+    ltp = row.get("last_price")
+    prev = row.get("prev_close_price")
+    try:
+        ltp = float(ltp)
+    except (TypeError, ValueError):
+        ltp = None
+    try:
+        prev = float(prev)
+    except (TypeError, ValueError):
+        prev = None
+    change = ((ltp / prev) - 1) * 100 if ltp is not None and prev else None
+    return ltp, change
+
+# A stable liquid-equity universe. The actual instrument key is resolved from
+# the daily Upstox BOD file, so prices never depend on hard-coded tokens.
+LIQUID_SYMBOLS = [
+"RELIANCE","HDFCBANK","ICICIBANK","BHARTIARTL","INFY","TCS","SBIN","ITC","LT","HINDUNILVR",
+"AXISBANK","KOTAKBANK","BAJFINANCE","M&M","MARUTI","SUNPHARMA","HCLTECH","NTPC","ONGC","TITAN",
+"ADANIENT","ADANIPORTS","BEL","POWERGRID","ULTRACEMCO","ASIANPAINT","TATASTEEL","JSWSTEEL","COALINDIA","NESTLEIND",
+"TECHM","WIPRO","TATAMOTORS","HINDALCO","GRASIM","TRENT","ETERNAL","INDUSINDBK","BAJAJFINSV","DIVISLAB",
+"DRREDDY","CIPLA","EICHERMOT","APOLLOHOSP","BRITANNIA","HEROMOTOCO","BAJAJ-AUTO","TATACONSUM","SHRIRAMFIN","HDFCLIFE",
+"SBILIFE","ADANIPOWER","JINDALSTEL","VEDL","IOC","BPCL","GAIL","RECLTD","PFC","HAL",
+"INDIGO","IRCTC","DLF","LODHA","PIDILITIND","SIEMENS","ABB","AMBUJACEM","ACC","BANKBARODA",
+"PNB","CANBK","IDFCFIRSTB","FEDERALBNK","YESBANK","INDIANB","LICI","ZOMATO","PAYTM","POLICYBZR",
+"DMART","MOTHERSON","TVSMOTOR","ASHOKLEY","BOSCHLTD","CUMMINSIND","DABUR","GODREJCP","COLPAL","MARICO",
+"VBL","HAVELLS","DIXON","POLYCAB","SRF","DLF","ICICIGI","ICICIPRULI","MAXHEALTH","FORTIS",
+"LTIM","MPHASIS","PERSISTENT","COFORGE","TORNTPHARM","AUROPHARMA","ALKEM","BIOCON","LUPIN","LAURUSLABS"
+]
+
+def _eq_instruments():
+    rows = [x for x in instruments() if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
+    by_symbol = {str(x.get("trading_symbol","")).upper(): x for x in rows}
+    selected = []
+    for symbol in LIQUID_SYMBOLS:
+        row = by_symbol.get(symbol)
+        if row:
+            selected.append(row)
+    return selected[:100]
+
+def compare_stocks():
+    rows = _eq_instruments()
+    quotes = _quotes([r["instrument_key"] for r in rows])
+    result = []
+    for r in rows:
+        key = r["instrument_key"].replace("|", ":")
+        q = quotes.get(key) or quotes.get(r["instrument_key"]) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
+            continue
+        result.append({
+            "rank": 0, "name": r.get("short_name") or r.get("name") or r.get("trading_symbol"),
+            "symbol": r.get("trading_symbol"), "instrument_key": r.get("instrument_key"),
+            "price": round(ltp, 2), "today_change": round(change, 2) if change is not None else None,
+            "volume": q.get("volume"), "year_high": q.get("year_high"), "year_low": q.get("year_low"),
+            "prev_close": q.get("prev_close_price"), "source": "Upstox Full Market Quotes V3",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+    result.sort(key=lambda x: x.get("volume") or 0, reverse=True)
+    for i, x in enumerate(result, 1): x["rank"] = i
+    return result[:100]
+
+def _fno_instruments():
+    today_ms = int(datetime.combine(date.today(), datetime.min.time()).timestamp() * 1000)
+    rows = []
+    for x in instruments():
+        if x.get("segment") != "NSE_FO": continue
+        typ = x.get("instrument_type")
+        if typ not in ("FUT", "CE", "PE"): continue
+        expiry = x.get("expiry")
+        try: exp = int(expiry)
+        except (TypeError, ValueError): continue
+        if exp < today_ms: continue
+        rows.append(x)
+    if not rows: return []
+    nearest = min(int(x["expiry"]) for x in rows)
+    rows = [x for x in rows if int(x["expiry"]) == nearest]
+    futures = [x for x in rows if x.get("instrument_type") == "FUT" and x.get("underlying_type") in ("EQUITY","INDEX")]
+    options = [x for x in rows if x.get("instrument_type") in ("CE","PE") and x.get("underlying_type") in ("EQUITY","INDEX")]
+    # Take a broad candidate set, then use live OI/volume to keep the displayed
+    # 100 contracts useful rather than arbitrary.
+    return futures[:120] + options[:380]
+
+def compare_fno():
+    rows = _fno_instruments()
+    quotes = _quotes([r["instrument_key"] for r in rows[:500]])
+    result = []
+    for r in rows[:500]:
+        key = r["instrument_key"].replace("|", ":")
+        q = quotes.get(key) or quotes.get(r["instrument_key"]) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None: continue
+        result.append({
+            "name": r.get("trading_symbol") or r.get("name"),
+            "symbol": r.get("trading_symbol"), "type": r.get("instrument_type"),
+            "underlying": r.get("underlying_symbol"), "expiry": r.get("expiry"),
+            "strike": r.get("strike_price") if r.get("instrument_type") in ("CE","PE") else None,
+            "lot_size": r.get("lot_size"), "price": round(ltp, 4),
+            "today_change": round(change,2) if change is not None else None,
+            "volume": q.get("volume"), "oi": q.get("oi"), "previous_oi": q.get("previous_oi"),
+            "year_high": q.get("year_high"), "year_low": q.get("year_low"),
+            "source": "Upstox Full Market Quotes V3",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+    # Mix the most liquid futures and options instead of returning only one type.
+    futures = sorted([x for x in result if x["type"]=="FUT"], key=lambda x:x.get("volume") or 0, reverse=True)[:50]
+    options = sorted([x for x in result if x["type"] in ("CE","PE")], key=lambda x:x.get("oi") or 0, reverse=True)[:50]
+    result = futures + options
+    result.sort(key=lambda x: ((x.get("type") != "FUT"), -(x.get("volume") or x.get("oi") or 0)))
+    for i,x in enumerate(result,1): x["rank"]=i
+    return result[:100]
+
+def market_now():
+    keys = [
+        "NSE_INDEX|Nifty 50","NSE_INDEX|Nifty Bank","NSE_INDEX|Nifty IT",
+        "NSE_INDEX|Nifty Midcap 100","NSE_INDEX|India VIX",
+    ]
+    data = _quotes(keys)
+    labels = {
+        "Nifty 50":"NIFTY 50","Nifty Bank":"NIFTY Bank","Nifty IT":"NIFTY IT",
+        "Nifty Midcap 100":"NIFTY Midcap 100","India VIX":"India VIX"
+    }
+    out=[]
+    for raw,q in data.items():
+        ltp,change=_quote_value(q)
+        if ltp is None: continue
+        sym=raw.split(":",1)[-1]
+        out.append({"label":labels.get(sym,sym),"value":round(ltp,2),"today_change":round(change,2) if change is not None else None,"kind":"index","freshness":"upstox"})
+    return out
