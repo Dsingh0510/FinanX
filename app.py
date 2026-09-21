@@ -129,7 +129,12 @@ def market_compare(segment: str):
         if segment == 'funds':
             refreshed = _compare_cached('funds-refresh', update_amfi_metrics, ttl=1800)
             rows = mutual_fund_metrics()
-            rows = [r for r in rows if not str(r.get('source','')).startswith('Bond proxy')][:100]
+            deduped = {}
+            for row in rows:
+                if str(row.get('source','')).startswith('Bond proxy'): continue
+                code = str(row.get('scheme_code') or row.get('scheme_name') or '')
+                deduped[code] = row
+            rows = list(deduped.values())[:100]
             return jsonify({'segment':'funds','count':len(rows),'source':'AMFI official NAV/history','refresh':refreshed,'items':rows})
         if segment == 'bonds':
             rows = _compare_cached('bonds', market_universe.compare_bonds)
