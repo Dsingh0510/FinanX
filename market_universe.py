@@ -245,7 +245,7 @@ def market_now():
             'value':round(ltp,4 if kind in ('currency','commodity') else 2),
             'today_change':round(change,2) if change is not None else None,
             'kind':kind,
-            'unit': ('/10g' if kind == 'commodity' else ('/
+            'unit': None,
         })
     out.sort(key=lambda x:x.get("volume") or 0,reverse=True)
     for i,x in enumerate(out[:50],1): x["rank"]=i
