@@ -1,3 +1,4 @@
+# Production redeploy marker: Market Now syntax verified
 # FinanX deployment sync: latest GitHub revision
 from __future__ import annotations
 
