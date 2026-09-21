@@ -252,7 +252,6 @@ def market_now():
             "value": round(ltp, 2),
             "today_change": round(change, 2) if change is not None else None,
             "kind": "equity",
-            "unit": "₹",
             "freshness": "upstox",
             "source": "Upstox Market Quote V3",
         })
