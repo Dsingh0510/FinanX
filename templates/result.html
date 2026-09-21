@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinanX - Allocation Result</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <section class="hero compact">
+      <div>
+        <p class="eyebrow">FINANX ANALYSIS</p>
+        <h1>Your sample allocation</h1>
+        <p class="sub">₹{{ '{:,.0f}'.format(result.amount) }} • {{ result.horizon }} years • {{ result.risk }} • {{ result.goal }}</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="allocation-list">
+      {% for item in result.allocations %}
+        <div class="allocation-row">
+          <div>
+            <strong>{{ item.asset }}</strong>
+            <span>{{ item.percent }}%</span>
+          </div>
+          <div>₹{{ '{:,.0f}'.format(item.amount) }}</div>
+        </div>
+      {% endfor %}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Important notes</h2>
+      <ul>
+      {% for note in result.notes %}<li>{{ note }}</li>{% endfor %}
+      </ul>
+      <a class="back" href="/">← Try another scenario</a>
+    </section>
+  </main>
+</body>
+</html>
