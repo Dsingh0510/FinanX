@@ -510,7 +510,7 @@ def market_highlights() -> list[dict]:
         ('Reliance Industries','RELIANCE.NS','equity',None),
         ('HDFC Bank','HDFCBANK.NS','equity',None),
         ('TCS','TCS.NS','equity',None),
-        ('USD/INR','USDINR=X','currency','/
+        ('USD/INR','USDINR=X','currency','/$'),
     have={x.get('label') for x in out}
     for label,symbol,kind,unit in fallback_targets:
         if label in have:
