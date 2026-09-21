@@ -307,6 +307,24 @@ def category_market_analysis() -> dict:
     fund_rows = tracking.get("funds", [])
     fd_rows = tracking.get("fds", [])
 
+    # Merge the historical stock metrics available from the candle engine into
+    # the live 100-stock quote universe. Other stocks remain quote/risk-proxy
+    # candidates until more history is available.
+    historical_by_name = {
+        str(x.get("name", "")).strip().upper(): x
+        for x in (historical_tracked or [])
+        if x.get("name")
+    }
+    for row in stock_rows:
+        hist = historical_by_name.get(str(row.get("name", "")).strip().upper())
+        if hist:
+            row.update({
+                "yoy": hist.get("yoy"),
+                "three_year_return": hist.get("three_year_return"),
+                "five_year_return": hist.get("five_year_return"),
+                "historical_available": True,
+            })
+
     live_breadth = _live_breadth(stock_rows)
     if stock_rows:
         stock_metrics = dict(stock_metrics)
