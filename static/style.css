@@ -75,3 +75,14 @@
 .compare-table tr:last-child td{border-bottom:0}
 .compare-table td:first-child{color:#98a2b3;font-weight:800}
 .compare-note{margin-top:9px;font-size:10px;color:#7b8494;line-height:1.5}
+
+
+.tracked-info-card{max-width:720px;width:min(720px,calc(100vw - 40px));max-height:88vh;overflow:hidden}
+.tracked-info-card .tracked-list{max-height:320px;overflow:auto}
+.tracked-scope{margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+.tracked-scope-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.tracked-scope-head>div{display:grid;gap:4px}
+.tracked-scope-head b{font-size:13px}
+.tracked-scope-head span:not(.tracked-count){font-size:11px;color:#7b8494;line-height:1.45}
+.tracked-count{font-size:11px;font-weight:800;color:#2456c4;background:#edf3ff;border:1px solid #dbe6ff;padding:5px 8px;border-radius:999px;white-space:nowrap}
+.tracked-source{margin-top:8px;font-size:10px;color:#8a94a6}
