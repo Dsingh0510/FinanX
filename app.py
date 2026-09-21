@@ -153,6 +153,53 @@ def market_compare(segment: str):
     except Exception as exc:
         return jsonify({'segment':segment,'count':0,'items':[],'error':str(exc)}), 500
 
+@app.get('/api/tracking')
+def tracking():
+    try:
+        engine = _engine()
+        if engine.__name__ != 'upstox_adapter':
+            return jsonify({
+                'status': 'fallback',
+                'message': 'Live tracking is available when the Upstox token is configured.',
+                'categories': {}
+            })
+        market = engine.category_market_analysis()
+        configs = {
+            'stocks': ('stocks', 100, 'Upstox live NSE equity quotes'),
+            'fno': ('fno', 100, 'Upstox live NSE F&O quotes'),
+            'mutual-funds': ('mutual-funds', 100, 'AMFI NAV/history'),
+            'bonds': ('bonds', 50, 'Upstox listed bond/debt quotes'),
+            'fd': ('fd', len(market.get('fd', {}).get('analyzed_options', [])), 'FinanX bank-rate registry'),
+        }
+        categories = {}
+        for slug, (market_key, target, source) in configs.items():
+            rows = market.get(market_key, {}).get('analyzed_options', []) or []
+            names = []
+            for row in rows:
+                if slug == 'mutual-funds':
+                    value = row.get('scheme_name')
+                elif slug == 'fd':
+                    value = f"{row.get('bank')} • {row.get('tenor')}"
+                else:
+                    value = row.get('symbol') or row.get('name') or row.get('label')
+                if value:
+                    names.append(str(value))
+            categories[slug] = {
+                'tracked': len(rows),
+                'target': target,
+                'source': source,
+                'names': names,
+            }
+        return jsonify({
+            'status': 'live',
+            'updated_at': market.get('_tracking', {}).get('updated_at'),
+            'ready': market.get('_tracking', {}).get('ready', False),
+            'categories': categories,
+        })
+    except Exception as exc:
+        return jsonify({'status': 'error', 'message': str(exc), 'categories': {}}), 500
+
+
 @app.get('/api/asset/<slug>')
 def asset(slug: str):
     for item in ASSET_INFO:
