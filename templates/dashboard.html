@@ -239,7 +239,12 @@ function renderMarketHighlights(items){
   }
   grid.innerHTML=items.map(item=>{
     const isMf=item.kind==='mutual_fund';
-    const value=item.value==null?'—':(item.kind==='bond_yield'?`${Number(item.value).toFixed(2)}%`:`₹${Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})}${item.unit?` ${escapeHtml(item.unit)}`:''}`);
+    const isYield=item.kind==='bond_yield';
+    const isCurrency=item.kind==='currency';
+    const isGold=item.kind==='gold';
+    const prefix=(isCurrency||isGold)?'₹':'';
+    const suffix=item.unit && !(isCurrency||isGold)?` ${escapeHtml(item.unit)}`:'';
+    const value=item.value==null?'—':(isYield?`${Number(item.value).toFixed(2)}%`:`${prefix}${Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})}${suffix}`);
     const yoy=item.yoy==null?'':`<span class="${item.yoy>=0?'positive':'negative'}">${item.yoy>=0?'+':''}${Number(item.yoy).toFixed(1)}% YoY</span>`;
     const today=item.today_change==null?'':`<span class="${item.today_change>=0?'positive':'negative'}">${item.today_change>=0?'+':''}${Number(item.today_change).toFixed(2)}% today</span>`;
     const mode = isMf ? 'Latest NAV' : (item.kind==='bond_yield' ? `${item.term||'Bond'} • Current yield` : 'Current value');
@@ -301,8 +306,8 @@ function renderHeroMarket(items){
    const isGold=label==='Gold';
    const isFx=label==='USD/INR';
    const unit=t.unit||'';
-  const valueTxt=t.value==null?'—':(isFx?`₹${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:4,maximumFractionDigits:4})}`:
-      `₹${Number(t.value).toLocaleString('en-IN',{maximumFractionDigits:isMfValue(t)?4:2})}${unit?` ${escapeHtml(unit)}`:''}`);
+  const valueTxt=t.value==null?'—':(isFx?`₹${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:4,maximumFractionDigits:4})`:
+      `${Number(t.value).toLocaleString('en-IN',{maximumFractionDigits:isMfValue(t)?4:2})}${unit?` ${escapeHtml(unit)}`:''}`);
    const dTxt=d==null?'Reference value':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`;
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
