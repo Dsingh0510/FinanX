@@ -164,7 +164,13 @@ def tracking():
         catalog = tracking_universe()
         fund_names = tracking_fund_universe(100)
         fd_rows = compare_fds()
-        live = bool(_os.getenv('UPSTOX_ANALYTICS_TOKEN', '').strip())
+        try:
+            import upstox_adapter as _market_adapter
+            health = _market_adapter.healthcheck()
+            live = bool(health.get('configured') and health.get('reachable'))
+        except Exception:
+            health = {'configured': False, 'reachable': False}
+            live = False
 
         if live:
             try:
@@ -223,7 +229,7 @@ def tracking():
             'status': 'live' if live else 'configured',
             'live_quotes_configured': live,
             'updated_at': datetime.now(timezone.utc).isoformat(),
-            'message': 'Live market data is active.' if live else 'Configured tracking universe is available; live market quotes require the server market token.',
+            'message': 'Live market data is active.' if live else 'Configured tracking universe is available; live market data is not currently connected.',
             'categories': categories,
         })
     except Exception as exc:
