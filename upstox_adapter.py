@@ -407,6 +407,17 @@ def category_market_analysis() -> dict:
         "fds_tracked": len(fd_rows),
         "updated_at": tracking.get("updated_at", now),
     }
+    result["_tracking"]["ready"] = (
+        len(stock_rows) >= 80 and
+        len(fno_rows) >= 80 and
+        len(fund_rows) >= 80 and
+        len(bond_rows) >= 10 and
+        len(fd_rows) >= 8
+    )
+    result["_tracking"]["message"] = (
+        "Live tracking is refreshed before a plan is generated. "
+        "A recommendation is withheld when the tracked universe is materially incomplete."
+    )
     return result
 
 def _upstox_rows(keys: list[tuple[str, str, str]]) -> list[dict]:
