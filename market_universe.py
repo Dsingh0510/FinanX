@@ -176,58 +176,29 @@ def compare_fno():
     return result[:100]
 
 def market_now():
-    """Return a broader live market board resolved from Upstox's daily instruments."""
-    index_targets = [
-        ("NIFTY 50", ["nifty 50"]),
-        ("NIFTY Bank", ["nifty bank", "nifty bank index"]),
-        ("NIFTY IT", ["nifty it"]),
-        ("NIFTY Midcap 100", ["nifty midcap 100"]),
-        ("NIFTY Next 50", ["nifty next 50"]),
-        ("NIFTY Smallcap 100", ["nifty smallcap 100"]),
-        ("NIFTY Auto", ["nifty auto"]),
-        ("NIFTY Financial Services", ["nifty financial services"]),
-        ("NIFTY FMCG", ["nifty fmcg"]),
-        ("NIFTY Pharma", ["nifty pharma"]),
-        ("NIFTY Metal", ["nifty metal"]),
-        ("NIFTY Realty", ["nifty realty"]),
-        ("NIFTY PSU Bank", ["nifty psu bank"]),
-        ("NIFTY Private Bank", ["nifty private bank"]),
-        ("India VIX", ["india vix"]),
-    ]
-    all_rows = instruments()
-    index_rows = [
-        x for x in all_rows
-        if x.get("segment") == "NSE_INDEX" and x.get("instrument_type") == "INDEX"
-    ]
-    by_name = {}
-    for row in index_rows:
-        for value in (row.get("name"), row.get("trading_symbol")):
-            if value:
-                by_name[str(value).strip().lower()] = row
+    """Return eight primary Market Now cards.
 
-    selected_indices = []
-    seen = set()
-    for label, aliases in index_targets:
-        row = next((by_name.get(a) for a in aliases if by_name.get(a)), None)
-        if row and row.get("instrument_key") not in seen:
-            selected_indices.append((label, row))
-            seen.add(row.get("instrument_key"))
-
-    stock_watch = [
-        "RELIANCE", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY",
-        "TCS", "SBIN", "ITC", "LT", "HINDUNILVR", "BAJFINANCE", "MARUTI"
+    The NSE index/equity values use direct Upstox instrument keys so the board
+    does not depend on the instrument-master lookup succeeding first.
+    Gold and USD/INR remain public-reference values and are labelled by the UI.
+    """
+    targets = [
+        ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
+        ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
+        ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
+        ("NIFTY Midcap 100", "NSE_INDEX|Nifty Midcap 100", "index"),
+        ("Reliance Industries", "NSE_EQ|INE002A01018", "equity"),
+        ("HDFC Bank", "NSE_EQ|INE040A01034", "equity"),
     ]
-    eq_rows = [x for x in all_rows if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
-    eq_by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
-    selected_stocks = [(sym, eq_by_symbol[sym]) for sym in stock_watch if sym in eq_by_symbol]
+    data = {}
+    try:
+        data = _quotes([key for _, key, _ in targets])
+    except Exception:
+        data = {}
 
-    keys = [row["instrument_key"] for _, row in selected_indices + selected_stocks]
-    data = _quotes(keys)
     out = []
-
-    for label, row in selected_indices:
-        raw_key = row["instrument_key"].replace("|", ":")
-        q = data.get(raw_key) or data.get(row["instrument_key"]) or {}
+    for label, key, kind in targets:
+        q = data.get(key.replace("|", ":")) or data.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -235,27 +206,14 @@ def market_now():
             "label": label,
             "value": round(ltp, 2),
             "today_change": round(change, 2) if change is not None else None,
-            "kind": "index",
+            "kind": kind,
             "freshness": "upstox",
             "source": "Upstox Market Quote V3",
         })
 
-    for symbol, row in selected_stocks:
-        raw_key = row["instrument_key"].replace("|", ":")
-        q = data.get(raw_key) or data.get(row["instrument_key"]) or {}
-        ltp, change = _quote_value(q)
-        if ltp is None:
-            continue
-        out.append({
-            "label": row.get("short_name") or row.get("name") or symbol,
-            "symbol": symbol,
-            "value": round(ltp, 2),
-            "today_change": round(change, 2) if change is not None else None,
-            "kind": "equity",
-            "freshness": "upstox",
-            "source": "Upstox Market Quote V3",
-        })
+    # Keep the cards in the intended display order.
     return out
+
 
 def compare_bonds():
     rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
