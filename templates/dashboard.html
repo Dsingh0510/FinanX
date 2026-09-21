@@ -243,7 +243,7 @@ function renderMarketHighlights(items){
     const isCurrency=item.kind==='currency';
     const isGold=item.kind==='gold';
     const prefix=(isCurrency||isGold)?'₹':'';
-    const suffix=item.unit && !(isCurrency||isGold)?` ${escapeHtml(item.unit)}`:'';
+    const suffix=item.unit?` ${escapeHtml(item.unit)}`:'';
     const value=item.value==null?'—':(isYield?`${Number(item.value).toFixed(2)}%`:`${prefix}${Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})}${suffix}`);
     const yoy=item.yoy==null?'':`<span class="${item.yoy>=0?'positive':'negative'}">${item.yoy>=0?'+':''}${Number(item.yoy).toFixed(1)}% YoY</span>`;
     const today=item.today_change==null?'':`<span class="${item.today_change>=0?'positive':'negative'}">${item.today_change>=0?'+':''}${Number(item.today_change).toFixed(2)}% today</span>`;
@@ -305,9 +305,9 @@ function renderHeroMarket(items){
    const d=t.today_change; const r=t.yoy;
    const isGold=label==='Gold';
    const isFx=label==='USD/INR';
+   const prefix=(isFx||isGold)?'₹':'';
    const unit=t.unit||'';
-  const valueTxt=t.value==null?'—':(isFx?`₹${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:4,maximumFractionDigits:4})`:
-      `${Number(t.value).toLocaleString('en-IN',{maximumFractionDigits:isMfValue(t)?4:2})}${unit?` ${escapeHtml(unit)}`:''}`);
+  const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isFx?4:2,maximumFractionDigits:isFx?4:(isMfValue(t)?4:2)})}${unit?` ${escapeHtml(unit)}`:''}`;
    const dTxt=d==null?'Reference value':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`;
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
