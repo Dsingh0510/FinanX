@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from allocation_engine import ASSET_INFO, build_portfolio
 from database import init_database
-from market_data import get_market_snapshot, get_market_highlights, get_category_market_analysis, start_background_collector, start_amfi_refresh, start_live_market_refresh, collect_once
+from market_data import get_market_snapshot, get_market_highlights, get_category_market_analysis, start_background_collector, start_amfi_refresh, start_live_market_refresh, refresh_live_market_values, collect_once
 from recommendation_engine import build_market_adjusted_plan
 
 load_dotenv()
@@ -15,7 +15,7 @@ init_database(app)
 # Vercel runs Flask as a request-driven serverless application. Do not start
 # perpetual daemon threads there: they are not a reliable scheduling mechanism
 # in a serverless runtime and would waste compute. Vercel requests use the
-# synchronous/live fallback layer in market_data.py instead.
+# synchronous/live refresh when market highlights are requested.
 IS_VERCEL = os.getenv("VERCEL") == "1"
 
 if not IS_VERCEL:
@@ -64,15 +64,19 @@ def market():
 
 @app.get('/api/market/highlights')
 def market_highlights():
-    # On a long-running host the background worker owns refreshes. On Vercel,
-    # get_market_highlights performs a synchronous best-effort refresh when its
-    # in-memory live cache is stale.
+    # Long-running hosts refresh in the background. Vercel cannot rely on
+    # perpetual daemon threads, so refresh the live market layer synchronously
+    # when a new/stale serverless instance serves this endpoint.
+    if IS_VERCEL:
+        try:
+            refresh_live_market_values()
+        except Exception:
+            pass
     return jsonify({"items": get_market_highlights()})
 
 @app.post('/api/market/refresh')
 def refresh_market():
-    # This endpoint remains useful for manual/admin refreshes. It is deliberately
-    # not called automatically by the browser.
+    # Manual/admin endpoint. It is not called automatically by the browser.
     return jsonify(collect_once())
 
 @app.get('/api/asset/<slug>')
