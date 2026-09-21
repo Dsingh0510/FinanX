@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>Live Upstox indices and equities, plus public/reference currency and commodity values where available.</p>
+          <p>8 market values at a glance: live Upstox indices/equities plus Gold and USD/INR reference values.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -131,7 +131,22 @@
   </div>
 </div>
 
-<div id="info-modal" class="modal hidden"><div class="modal-card"><button class="modal-close" id="modal-close">×</button><div class="mini-label" id="modal-label"></div><h3 id="modal-title"></h3><div class="modal-simple"><div><b>What it is</b><span id="modal-what"></span></div><div><b>How it works</b><span id="modal-how"></span></div></div></div></div>
+<div id="info-modal" class="modal hidden">
+  <div class="modal-card tracked-info-card">
+    <button class="modal-close" id="modal-close">×</button>
+    <div class="mini-label" id="modal-label"></div>
+    <h3 id="modal-title"></h3>
+    <div class="modal-simple">
+      <div><b>What it is</b><span id="modal-what"></span></div>
+      <div><b>How it works</b><span id="modal-how"></span></div>
+    </div>
+    <div class="tracked-scope" id="modal-tracking">
+      <div class="tracked-scope-head"><div><b>What FinanX tracks for this segment</b><span>These are the instruments used in the backend tracking layer before market-adjusted analysis.</span></div><span class="tracked-count" id="modal-tracking-count">Loading…</span></div>
+      <div class="tracked-source" id="modal-tracking-source"></div>
+      <div class="tracked-list" id="modal-tracking-list"><div class="tracked-empty">Loading tracked universe…</div></div>
+    </div>
+  </div>
+</div>
 <script>
 const assets = {{ assets|tojson }};
 let allocationChart = null;
@@ -152,14 +167,51 @@ function renderLearn(){
   document.querySelectorAll('.info-btn').forEach(btn=>btn.addEventListener('click',()=>openModal(btn.dataset.slug)));
 }
 
-function openModal(slug){
+async function openModal(slug){
   const a=assetBySlug[slug]; if(!a)return;
-  document.getElementById('modal-label').textContent=`FINANX LEARN • ${a.group}`;
+  document.getElementById('modal-label').textContent=`FINANX INFO • ${a.group}`;
   document.getElementById('modal-title').textContent=a.name;
   document.getElementById('modal-what').textContent=a.what;
   document.getElementById('modal-how').textContent=a.how || 'FinanX will explain the basic process here.';
+  const panel=document.getElementById('modal-tracking');
+  const count=document.getElementById('modal-tracking-count');
+  const source=document.getElementById('modal-tracking-source');
+  const list=document.getElementById('modal-tracking-list');
+  const mapSlug=slug==='fd'?'fd':slug;
+  const nonTracked = {
+    'gold':'Gold is shown in Market Now as a live/public reference value; it is not currently part of the 100-stock/100-fund backend universe.',
+    'commodities':'Commodities are currently shown as a separate learning category; they are not part of the core tracked universe used for this recommendation build.',
+    'currency':'USD/INR is shown in Market Now as a public/reference value; it is not currently part of the core 100-stock/100-fund tracking universe.',
+  };
   document.getElementById('info-modal').classList.remove('hidden');
+  if(nonTracked[slug]){
+    count.textContent='Reference';
+    source.textContent='';
+    list.innerHTML=`<div class="tracked-empty">${escapeHtml(nonTracked[slug])}</div>`;
+    return;
+  }
+  count.textContent='Loading…';
+  source.textContent='';
+  list.innerHTML='<div class="tracked-empty">Loading tracked universe…</div>';
+  try{
+    const r=await fetch('/api/tracking',{cache:'no-store'});
+    const data=await r.json();
+    const cat=(data.categories||{})[mapSlug];
+    if(!r.ok||!cat) throw new Error(data.message||'Tracking data unavailable');
+    count.textContent=`${cat.tracked}${cat.target?` / ${cat.target}`:''} tracked`;
+    source.textContent=cat.source||'Backend tracking source';
+    if(!cat.names?.length){
+      list.innerHTML='<div class="tracked-empty">No tracked instruments are available for this segment yet.</div>';
+      return;
+    }
+    list.innerHTML=cat.names.map((name,i)=>`<div class="tracked-item"><span>${i+1}</span><b>${escapeHtml(name)}</b></div>`).join('');
+  }catch(e){
+    count.textContent='Unavailable';
+    source.textContent='';
+    list.innerHTML=`<div class="tracked-empty">${escapeHtml(e.message||'Tracking data unavailable. Try again shortly.')}</div>`;
+  }
 }
+
 
 document.getElementById('modal-close').onclick=()=>document.getElementById('info-modal').classList.add('hidden');
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
@@ -237,7 +289,10 @@ function renderMarketHighlights(items){
     grid.innerHTML='<div class="market-now-empty">Market values are available from the public/reference cache.</div>';
     return;
   }
-  grid.innerHTML=items.map(item=>{
+  const wanted=['NIFTY 50','NIFTY Bank','NIFTY IT','NIFTY Midcap 100','Reliance Industries','HDFC Bank','Gold','USD/INR'];
+  const byLabel=Object.fromEntries(items.map(x=>[x.label,x]));
+  const display=wanted.map(x=>byLabel[x]).filter(Boolean);
+  grid.innerHTML=display.slice(0,8).map(item=>{
     const isMf=item.kind==='mutual_fund';
     const isYield=item.kind==='bond_yield';
     const isCurrency=item.kind==='currency';
