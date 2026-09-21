@@ -175,31 +175,80 @@ def compare_fno():
     for i,x in enumerate(result,1): x["rank"]=i
     return result[:100]
 
+def _nearest_live_future(rows, matcher):
+    """Find the nearest non-expired futures contract matching matcher."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    candidates=[]
+    for row in rows:
+        if row.get('instrument_type') != 'FUT':
+            continue
+        expiry=row.get('expiry')
+        try:
+            expiry_ms=int(expiry)
+        except (TypeError,ValueError):
+            try:
+                expiry_ms=int(datetime.fromisoformat(str(expiry).replace('Z','+00:00')).timestamp()*1000)
+            except Exception:
+                continue
+        if expiry_ms < now_ms or not matcher(row):
+            continue
+        row['_expiry_ms']=expiry_ms
+        candidates.append(row)
+    if not candidates:
+        return None
+    return min(candidates,key=lambda x:x['_expiry_ms'])
+
 def market_now():
-    """Return six primary live market cards when the server market feed is connected."""
-    targets = [
-        ('NIFTY 50', 'NSE_INDEX|Nifty 50', 'index'),
-        ('NIFTY Bank', 'NSE_INDEX|Nifty Bank', 'index'),
-        ('NIFTY IT', 'NSE_INDEX|Nifty IT', 'index'),
-        ('Reliance Industries', 'NSE_EQ|INE002A01018', 'equity'),
-        ('HDFC Bank', 'NSE_EQ|INE040A01034', 'equity'),
-        ('TCS', 'NSE_EQ|INE467B01029', 'equity'),
+    """Return live market cards for the homepage."""
+    instruments_all=instruments()
+
+    # Direct index/equity instruments.
+    targets=[
+        ('NIFTY 50','NSE_INDEX|Nifty 50','index'),
+        ('NIFTY Bank','NSE_INDEX|Nifty Bank','index'),
+        ('NIFTY IT','NSE_INDEX|Nifty IT','index'),
+        ('Reliance Industries','NSE_EQ|INE002A01018','equity'),
+        ('HDFC Bank','NSE_EQ|INE040A01034','equity'),
     ]
-    data = _quotes([key for _, key, _ in targets])
-    out = []
-    for label, key, kind in targets:
-        q=data.get(key.replace('|', ':')) or data.get(key) or {}
+
+    # Resolve near-month Gold futures dynamically from the daily MCX universe.
+    gold_row=_nearest_live_future(
+        [x for x in instruments_all if x.get('segment')=='MCX_FO'],
+        lambda x: 'GOLD' in str(x.get('underlying_symbol','')).upper() or 'GOLD' in str(x.get('name','')).upper()
+    )
+    if gold_row:
+        targets.append(('Gold',''+gold_row.get('instrument_key',''),'commodity'))
+
+    # Resolve the nearest USD/INR currency future dynamically.
+    fx_rows=[x for x in instruments_all if x.get('segment') in ('NSE_FO','BCD_FO','NCD_FO')]
+    usd_row=_nearest_live_future(
+        fx_rows,
+        lambda x: any(term in (str(x.get(k,'' )).upper()) for k in ('trading_symbol','name','underlying_symbol') for term in ('USDINR','USD/INR'))
+    )
+    if usd_row:
+        targets.append(('USD/INR',''+usd_row.get('instrument_key',''),'currency'))
+
+    # Add TCS as the eighth tracked market-style entity when Gold/FX resolve;
+    # it also acts as a fallback if one of those contracts is unavailable.
+    targets.append(('TCS','NSE_EQ|INE467B01029','equity'))
+
+    keys=[key for _,key,_ in targets if key]
+    data=_quotes(keys)
+    out=[]
+    for label,key,kind in targets:
+        q=data.get(key.replace('|',':')) or data.get(key) or {}
         ltp,change=_quote_value(q)
         if ltp is None:
             continue
         out.append({
             'label':label,
-            'value':round(ltp,2),
+            'value':round(ltp,4 if kind in ('currency','commodity') else 2),
             'today_change':round(change,2) if change is not None else None,
             'kind':kind,
             'freshness':'live',
+            'instrument_key':key,
         })
-    return out
+    return out[:8]
 
 def compare_bonds():
     rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
