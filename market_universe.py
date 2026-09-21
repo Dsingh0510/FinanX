@@ -122,13 +122,24 @@ def _fno_instruments():
         typ = x.get("instrument_type")
         if typ not in ("FUT", "CE", "PE"): continue
         expiry = x.get("expiry")
-        try: exp = int(expiry)
-        except (TypeError, ValueError): continue
-        if exp < today_ms: continue
+        try:
+            exp = int(expiry)
+            expiry_sort = exp
+            if exp < today_ms:
+                continue
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+                expiry_sort = int(parsed.timestamp() * 1000)
+            except Exception:
+                continue
+            if expiry_sort < today_ms:
+                continue
+        x["_expiry_sort"] = expiry_sort
         rows.append(x)
     if not rows: return []
-    nearest = min(int(x["expiry"]) for x in rows)
-    rows = [x for x in rows if int(x["expiry"]) == nearest]
+    nearest = min(x["_expiry_sort"] for x in rows)
+    rows = [x for x in rows if x["_expiry_sort"] == nearest]
     futures = [x for x in rows if x.get("instrument_type") == "FUT" and x.get("underlying_type") in ("EQUITY","INDEX")]
     options = [x for x in rows if x.get("instrument_type") in ("CE","PE") and x.get("underlying_type") in ("EQUITY","INDEX")]
     # Take a broad candidate set, then use live OI/volume to keep the displayed
@@ -165,29 +176,93 @@ def compare_fno():
     return result[:100]
 
 def market_now():
-    keys = [
-        "NSE_INDEX|Nifty 50","NSE_INDEX|Nifty Bank","NSE_INDEX|Nifty IT",
-        "NSE_INDEX|Nifty Midcap 100","NSE_INDEX|India VIX",
+    """Return a broader live market board resolved from Upstox's daily instruments."""
+    index_targets = [
+        ("NIFTY 50", ["nifty 50"]),
+        ("NIFTY Bank", ["nifty bank", "nifty bank index"]),
+        ("NIFTY IT", ["nifty it"]),
+        ("NIFTY Midcap 100", ["nifty midcap 100"]),
+        ("NIFTY Next 50", ["nifty next 50"]),
+        ("NIFTY Smallcap 100", ["nifty smallcap 100"]),
+        ("NIFTY Auto", ["nifty auto"]),
+        ("NIFTY Financial Services", ["nifty financial services"]),
+        ("NIFTY FMCG", ["nifty fmcg"]),
+        ("NIFTY Pharma", ["nifty pharma"]),
+        ("NIFTY Metal", ["nifty metal"]),
+        ("NIFTY Realty", ["nifty realty"]),
+        ("NIFTY PSU Bank", ["nifty psu bank"]),
+        ("NIFTY Private Bank", ["nifty private bank"]),
+        ("India VIX", ["india vix"]),
     ]
-    data = _quotes(keys)
-    labels = {
-        "Nifty 50":"NIFTY 50","Nifty Bank":"NIFTY Bank","Nifty IT":"NIFTY IT",
-        "Nifty Midcap 100":"NIFTY Midcap 100","India VIX":"India VIX"
-    }
-    out=[]
-    for raw,q in data.items():
-        ltp,change=_quote_value(q)
-        if ltp is None: continue
-        sym=raw.split(":",1)[-1]
-        out.append({"label":labels.get(sym,sym),"value":round(ltp,2),"today_change":round(change,2) if change is not None else None,"kind":"index","freshness":"upstox"})
-    return out
+    all_rows = instruments()
+    index_rows = [
+        x for x in all_rows
+        if x.get("segment") == "NSE_INDEX" and x.get("instrument_type") == "INDEX"
+    ]
+    by_name = {}
+    for row in index_rows:
+        for value in (row.get("name"), row.get("trading_symbol")):
+            if value:
+                by_name[str(value).strip().lower()] = row
 
+    selected_indices = []
+    seen = set()
+    for label, aliases in index_targets:
+        row = next((by_name.get(a) for a in aliases if by_name.get(a)), None)
+        if row and row.get("instrument_key") not in seen:
+            selected_indices.append((label, row))
+            seen.add(row.get("instrument_key"))
+
+    stock_watch = [
+        "RELIANCE", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY",
+        "TCS", "SBIN", "ITC", "LT", "HINDUNILVR", "BAJFINANCE", "MARUTI"
+    ]
+    eq_rows = [x for x in all_rows if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
+    eq_by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
+    selected_stocks = [(sym, eq_by_symbol[sym]) for sym in stock_watch if sym in eq_by_symbol]
+
+    keys = [row["instrument_key"] for _, row in selected_indices + selected_stocks]
+    data = _quotes(keys)
+    out = []
+
+    for label, row in selected_indices:
+        raw_key = row["instrument_key"].replace("|", ":")
+        q = data.get(raw_key) or data.get(row["instrument_key"]) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
+            continue
+        out.append({
+            "label": label,
+            "value": round(ltp, 2),
+            "today_change": round(change, 2) if change is not None else None,
+            "kind": "index",
+            "freshness": "upstox",
+            "source": "Upstox Market Quote V3",
+        })
+
+    for symbol, row in selected_stocks:
+        raw_key = row["instrument_key"].replace("|", ":")
+        q = data.get(raw_key) or data.get(row["instrument_key"]) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
+            continue
+        out.append({
+            "label": row.get("short_name") or row.get("name") or symbol,
+            "symbol": symbol,
+            "value": round(ltp, 2),
+            "today_change": round(change, 2) if change is not None else None,
+            "kind": "equity",
+            "unit": "₹",
+            "freshness": "upstox",
+            "source": "Upstox Market Quote V3",
+        })
+    return out
 
 def compare_bonds():
     rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
     bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
     rows = [x for x in rows if any(w in str(x.get("name","")).upper() or w in str(x.get("trading_symbol","")).upper() for w in bond_words)]
-    rows = rows[:80]
+    rows = rows[:160]
     quotes = _quotes([x["instrument_key"] for x in rows])
     out=[]
     for r in rows:
@@ -202,8 +277,8 @@ def compare_bonds():
             "source":"Upstox Full Market Quotes V3","updated_at":datetime.now(timezone.utc).isoformat()
         })
     out.sort(key=lambda x:x.get("volume") or 0,reverse=True)
-    for i,x in enumerate(out[:20],1): x["rank"]=i
-    return out[:20]
+    for i,x in enumerate(out[:50],1): x["rank"]=i
+    return out[:50]
 
 def compare_fds():
     # General-public card rates for a broadly comparable ~1-year tenor.
