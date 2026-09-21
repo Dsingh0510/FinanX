@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 import os
 
-# Vercel's deployed filesystem is not a durable writable application directory.
-# Keep the same SQLite schema for the serverless runtime, but place its temporary
-# cache under /tmp. It is intentionally ephemeral; the application also has
-# live/public-data fallbacks so a cold function can rebuild its cache.
-_default_db = "/tmp/finanx.db" if os.getenv("VERCEL") == "1" else "finanx.db"
-DB_PATH = Path(os.getenv("FINANX_DB", _default_db))
+# Vercel's deployed application directory is read-only. Even if an old
+# FINANX_DB variable exists in the Vercel project, always force serverless
+# SQLite into /tmp, which is the writable temporary filesystem.
+if os.getenv("VERCEL") == "1":
+    DB_PATH = Path("/tmp/finanx.db")
+else:
+    DB_PATH = Path(os.getenv("FINANX_DB", "finanx.db"))
 
 
 def utc_now() -> str:
@@ -128,7 +129,6 @@ def init_database(app=None) -> None:
         );
         """
     )
-    # Backward-compatible schema upgrades for an existing FinanX database.
     _ensure_column(conn, "market_metrics", "return_3y", "REAL")
     _ensure_column(conn, "market_metrics", "return_5y", "REAL")
     conn.commit()
