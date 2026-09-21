@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-import os
 
-# Vercel's deployed application directory is read-only. Even if an old
-# FINANX_DB variable exists in the Vercel project, always force serverless
-# SQLite into /tmp, which is the writable temporary filesystem.
-if os.getenv("VERCEL") == "1":
-    DB_PATH = Path("/tmp/finanx.db")
-else:
-    DB_PATH = Path(os.getenv("FINANX_DB", "finanx.db"))
+# Vercel exposes VERCEL/VERCEL_ENV/VERCEL_URL depending on runtime context.
+# Never honor an old FINANX_DB value on Vercel because the deployment filesystem
+# is read-only. /tmp is the writable temporary location for serverless execution.
+IS_VERCEL = bool(
+    os.getenv("VERCEL")
+    or os.getenv("VERCEL_ENV")
+    or os.getenv("VERCEL_URL")
+)
+
+DB_PATH = (
+    Path("/tmp/finanx.db")
+    if IS_VERCEL
+    else Path(os.getenv("FINANX_DB", "finanx.db"))
+)
 
 
 def utc_now() -> str:
