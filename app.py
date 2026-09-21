@@ -12,11 +12,18 @@ load_dotenv()
 app=Flask(__name__)
 init_database(app)
 
-# Start FinanX's own automatic public-data collector. No Upstox account/token required.
-start_background_collector()
-start_amfi_refresh()
-# Current market values refresh independently in the background so page load never waits on external market sites.
-start_live_market_refresh()
+# Vercel runs Flask as a request-driven serverless application. Do not start
+# perpetual daemon threads there: they are not a reliable scheduling mechanism
+# in a serverless runtime and would waste compute. Vercel requests use the
+# synchronous/live fallback layer in market_data.py instead.
+IS_VERCEL = os.getenv("VERCEL") == "1"
+
+if not IS_VERCEL:
+    # Start FinanX's automatic public-data collectors on a normal long-running host.
+    start_background_collector()
+    start_amfi_refresh()
+    # Current market values refresh independently so page load never waits on external market sites.
+    start_live_market_refresh()
 
 
 def _parse_amount(raw: str) -> float:
@@ -57,11 +64,15 @@ def market():
 
 @app.get('/api/market/highlights')
 def market_highlights():
-    # Never run a network refresh in the Flask request. The background worker owns refreshes.
+    # On a long-running host the background worker owns refreshes. On Vercel,
+    # get_market_highlights performs a synchronous best-effort refresh when its
+    # in-memory live cache is stale.
     return jsonify({"items": get_market_highlights()})
 
 @app.post('/api/market/refresh')
 def refresh_market():
+    # This endpoint remains useful for manual/admin refreshes. It is deliberately
+    # not called automatically by the browser.
     return jsonify(collect_once())
 
 @app.get('/api/asset/<slug>')
