@@ -131,7 +131,7 @@ def _mfapi_resolve_targets(terms, limit=6):
             continue
     return selected
 
-def _select_targets(rows, target_count: int = 30):
+def _select_targets(rows, target_count: int = 100):
     names = [(r['scheme_name'].lower(), r) for r in rows]
     selected = []
     for term in TARGET_TERMS:
@@ -275,7 +275,7 @@ def _fallback_history_all(codes: set[str], existing: dict[str, dict]):
 
 
 def update_amfi_metrics() -> dict:
-    """Refresh a representative 30-fund sample using official AMFI data.
+    """Refresh a 100-fund comparison universe using official AMFI data.
 
     The primary path is AMFI NAVAll + AMFI historical NAV. If the AMFI history
     portal temporarily returns an error/stub, the history calculation falls
@@ -285,7 +285,7 @@ def update_amfi_metrics() -> dict:
         try:
             r = _get(AMFI_LATEST, timeout=15, attempts=2)
             latest = _parse_latest(r.text)
-            selected = _select_targets(latest, 30)
+            selected = _select_targets(latest, 100)
         except Exception:
             latest = []
             selected = _mfapi_resolve_targets(TARGET_TERMS, limit=8)
