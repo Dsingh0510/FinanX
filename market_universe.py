@@ -302,11 +302,6 @@ def tracking_universe():
             for x in bonds
         ],
     }
- if kind=='currency' else None,
-            'freshness':'live',
-            'instrument_key':key,
-        })
-    return out[:8]
 
 def compare_bonds():
     rows = [x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
