@@ -453,33 +453,77 @@ def _upstox_rows(keys: list[tuple[str, str, str]]) -> list[dict]:
 
 
 def market_highlights() -> list[dict]:
-    out = []
+    """Build the eight-card Market Now board without exposing provider details."""
+    out=[]
     try:
         from market_universe import market_now
         out.extend(market_now())
     except Exception:
-        pass
+        out=[]
 
-    usd = _yahoo_quote("USDINR=X", "USD/INR", "currency")
-    gold = _yahoo_quote("GC=F", "Gold", "gold", "USD/troy oz")
-    nifty = _yahoo_quote("^NSEI", "NIFTY 50", "index")
+    # Public fallback keeps the board populated when the live server feed is
+    # not reachable. These are current/delayed public market references.
+    fallback_targets=[
+        ('NIFTY 50','^NSEI','index',None),
+        ('NIFTY Bank','^NSEBANK','index',None),
+        ('NIFTY IT','^CNXIT','index',None),
+        ('Reliance Industries','RELIANCE.NS','equity',None),
+        ('HDFC Bank','HDFCBANK.NS','equity',None),
+        ('TCS','TCS.NS','equity',None),
+    ]
+    have={x.get('label') for x in out}
+    for label,symbol,kind,unit in fallback_targets:
+        if label in have:
+            continue
+        row=_yahoo_quote(symbol,label,kind,unit)
+        if row:
+            out.append(row)
 
-    if gold and usd and gold.get("value") is not None and usd.get("value") is not None:
-        gold = dict(gold)
-        gold["value"] = round(float(gold["value"]) * float(usd["value"]) * 10.0 / 31.1034768, 2)
-        gold["unit"] = "/10g"
-        gold["freshness"] = "public-reference"
-    else:
-        gold = None
+    # One daily mutual-fund NAV from the same AMFI universe used by the
+    # recommendation engine.
+    fund_row=None
+    try:
+        from database import mutual_fund_metrics
+        from amfi_data import update_amfi_metrics_fast
+        funds=mutual_fund_metrics()
+        if not funds:
+            update_amfi_metrics_fast()
+            funds=mutual_fund_metrics()
+        fund_row=next((x for x in funds if 'HDFC Flexi Cap Fund' in str(x.get('scheme_name','')) and 'Direct' in str(x.get('scheme_name','')) and x.get('latest_nav') is not None),None)
+        fund_row=fund_row or next((x for x in funds if x.get('latest_nav') is not None),None)
+    except Exception:
+        fund_row=None
+    if fund_row:
+        out.append({
+            'label': 'HDFC Flexi Cap Fund • Direct Growth',
+            'value': round(float(fund_row['latest_nav']),4),
+            'today_change': None,
+            'kind': 'mutual_fund',
+            'unit': 'Latest NAV',
+            'date': fund_row.get('latest_date'),
+            'freshness': 'daily',
+        })
 
-    if nifty and not any(x.get("label") == "NIFTY 50" for x in out):
-        out.insert(0, nifty)
-    if gold:
-        out.append(gold)
-    if usd:
-        out.append(usd)
-    return out
+    # A current published retail FD reference for the one-year bucket.
+    try:
+        from market_universe import compare_fds
+        fd=compare_fds()[0]
+    except Exception:
+        fd=None
+    if fd:
+        out.append({
+            'label': 'SBI FD • 1 Year',
+            'value': float(fd.get('rate')) if fd.get('rate') is not None else None,
+            'today_change': None,
+            'kind': 'fd',
+            'unit': '% p.a.',
+            'date': fd.get('effective'),
+            'freshness': 'rate-reference',
+        })
 
+    preferred=['NIFTY 50','NIFTY Bank','NIFTY IT','Reliance Industries','HDFC Bank','TCS','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year']
+    by={x.get('label'):x for x in out if x.get('label')}
+    return [by[x] for x in preferred if x in by][:8]
 def market_snapshot() -> dict:
     analysis = category_market_analysis()
     return {
