@@ -114,6 +114,19 @@
       </div>
     </section>
 
+    <section class="section tracking-section" id="tracking">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">FINANX TRACKING COVERAGE</div>
+          <h2>What FinanX checks before the distribution.</h2>
+          <p id="tracking-summary-text">Loading tracked universe…</p>
+        </div>
+      </div>
+      <div class="tracking-grid" id="tracking-grid">
+        <div class="tracking-loading">Loading tracking coverage…</div>
+      </div>
+    </section>
+
     <section class="section final-note">
       <div class="quote-card"><div class="quote-mark">“</div><div><h2>FinanX is built around one simple idea.</h2><p>Better decisions start with understanding where the money can go, what can happen to it, and why diversification matters.</p></div></div>
     </section>
@@ -141,7 +154,7 @@
       <div><b>How it works</b><span id="modal-how"></span></div>
     </div>
     <div class="tracked-scope" id="modal-tracking">
-      <div class="tracked-scope-head"><div><b>What FinanX tracks for this segment</b><span>These are the instruments used in the backend tracking layer before market-adjusted analysis.</span></div><span class="tracked-count" id="modal-tracking-count">Loading…</span></div>
+      <div class="tracked-scope-head"><div><b>What FinanX tracks for this segment</b><span>These are the entities FinanX is configured to track and, when live data is available, the live universe checked before market-adjusted analysis.</span></div><span class="tracked-count" id="modal-tracking-count">Loading…</span></div>
       <div class="tracked-source" id="modal-tracking-source"></div>
       <div class="tracked-list" id="modal-tracking-list"><div class="tracked-empty">Loading tracked universe…</div></div>
     </div>
@@ -215,6 +228,37 @@ async function openModal(slug){
 
 document.getElementById('modal-close').onclick=()=>document.getElementById('info-modal').classList.add('hidden');
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
+
+async function loadTrackingCoverage(){
+  const grid=document.getElementById('tracking-grid');
+  const summary=document.getElementById('tracking-summary-text');
+  if(!grid) return;
+  try{
+    const r=await fetch('/api/tracking',{cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.message||'Tracking data unavailable');
+    const order=[['stocks','Stocks'],['fno','F&O'],['mutual-funds','Mutual Funds'],['bonds','Bonds / Debt'],['fd','Bank FDs']];
+    summary.textContent=data.live_quotes_configured
+      ? 'Live universe is active. Open Info on each segment to see every tracked entity.'
+      : 'Configured universe is shown below. Live Upstox quotes need the Vercel token to be enabled.';
+    grid.innerHTML=order.map(([slug,label])=>{
+      const c=(data.categories||{})[slug]||{};
+      const live=c.mode==='live quotes';
+      return `<article class="tracking-card">
+        <div class="tracking-card-top"><span>${escapeHtml(label)}</span><span class="tracking-status ${live?'live':'configured'}">${live?'LIVE':'CONFIGURED'}</span></div>
+        <strong>${Number(c.tracked||0)}${c.target?` / ${c.target}`:''}</strong>
+        <small>${escapeHtml(c.source||'Backend tracking')}</small>
+        <button type="button" class="tracking-view-btn" data-slug="${escapeHtml(slug)}">View all tracked →</button>
+      </article>`;
+    }).join('');
+    grid.querySelectorAll('.tracking-view-btn').forEach(btn=>{
+      btn.addEventListener('click',()=>openModal(btn.dataset.slug));
+    });
+  }catch(e){
+    summary.textContent='Tracking coverage is temporarily unavailable.';
+    grid.innerHTML=`<div class="tracking-error">${escapeHtml(e.message||'Try again shortly.')}</div>`;
+  }
+}
 
 async function createPlan(e){
  e.preventDefault();
@@ -371,6 +415,7 @@ function renderHeroMarket(items){
 }
 
 renderLearn();
+loadTrackingCoverage();
 refreshMarket();
 setInterval(refreshMarket,180000);
 // Re-check the local cache quickly after startup so background AMFI/commodity history
