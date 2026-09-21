@@ -513,3 +513,14 @@ def category_metrics() -> dict:
             out[k] = round(sum(vals) / len(vals), 2)
     out['schemes'] = [r['scheme_name'] for r in valid[:30]]
     return out
+
+
+def tracking_fund_universe(limit: int = 100) -> list[str]:
+    """Return the AMFI fund universe configured for FinanX tracking."""
+    try:
+        r = _get(AMFI_LATEST, timeout=15, attempts=2)
+        latest = _parse_latest(r.text)
+        selected = _select_targets(latest, limit)
+        return [r["scheme_name"] for r in selected[:limit]]
+    except Exception:
+        return [str(x) for x in TARGET_TERMS[:limit]]
