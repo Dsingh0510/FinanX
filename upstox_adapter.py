@@ -295,6 +295,11 @@ def _upstox_rows(keys: list[tuple[str, str, str]]) -> list[dict]:
 
 def market_highlights() -> list[dict]:
     out = []
+    try:
+        from market_universe import market_now
+        out.extend(market_now())
+    except Exception:
+        pass
     if configured():
         try:
             out.extend(_upstox_rows([(k, n, "NSE") for k, n in NSE_EQ] + [(k, n, "BSE") for k, n in BSE_EQ]))
