@@ -218,7 +218,9 @@ def _tracking_snapshot() -> dict:
     if hit and now_ts - hit[0] < _TRACKING_TTL:
         return hit[1]
 
-    from market_universe import compare_stocks, compare_fno, compare_bonds, compare_fds
+    from market_universe import (
+        compare_stocks, compare_fno, compare_bonds, compare_fds, tracking_universe
+    )
     from database import mutual_fund_metrics
     from amfi_data import update_amfi_metrics, category_metrics, bond_proxy_metrics
 
@@ -227,6 +229,11 @@ def _tracking_snapshot() -> dict:
     bonds = []
     fds = []
     funds = mutual_fund_metrics()
+    configured = {"stocks": [], "fno": [], "bonds": []}
+    try:
+        configured = tracking_universe()
+    except Exception:
+        configured = {"stocks": [], "fno": [], "bonds": []}
     fund_refresh = None
 
     try:
@@ -262,6 +269,7 @@ def _tracking_snapshot() -> dict:
         "fund_metrics": category_metrics(),
         "bond_proxy_metrics": bond_proxy_metrics(),
         "fund_refresh": fund_refresh,
+        "configured_universe": configured,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     _TRACKING_CACHE["universe"] = (now_ts, snapshot)
@@ -407,16 +415,30 @@ def category_market_analysis() -> dict:
         "fds_tracked": len(fd_rows),
         "updated_at": tracking.get("updated_at", now),
     }
+    configured_stocks = len((tracking.get("configured_universe") or {}).get("stocks", []))
+    configured_fno = len((tracking.get("configured_universe") or {}).get("fno", []))
+    configured_bonds = len((tracking.get("configured_universe") or {}).get("bonds", []))
+    configured_funds = len(fund_rows)
+
+    result["_tracking"].update({
+        "configured_stocks": configured_stocks,
+        "configured_fno": configured_fno,
+        "configured_bonds": configured_bonds,
+        "configured_funds": configured_funds,
+        "live_stock_quotes": len(stock_rows),
+        "live_fno_quotes": len(fno_rows),
+        "live_bond_quotes": len(bond_rows),
+    })
     result["_tracking"]["ready"] = (
-        len(stock_rows) >= 80 and
-        len(fno_rows) >= 80 and
-        len(fund_rows) >= 80 and
-        len(bond_rows) >= 10 and
+        configured_stocks >= 80 and
+        configured_fno >= 80 and
+        configured_funds >= 80 and
+        configured_bonds >= 10 and
         len(fd_rows) >= 8
     )
     result["_tracking"]["message"] = (
-        "Live tracking is refreshed before a plan is generated. "
-        "A recommendation is withheld when the tracked universe is materially incomplete."
+        "The entity universe is checked before the recommendation is generated. "
+        "Current quote coverage is reported separately so a temporary quote miss does not block a plan."
     )
     return result
 
