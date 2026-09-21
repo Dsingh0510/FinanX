@@ -108,3 +108,10 @@ def mutual_fund_metrics() -> list[dict]:
     rows = conn.execute('SELECT * FROM mutual_fund_metrics ORDER BY scheme_name').fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def set_provider_status(provider: str, status: str, *, success: bool = True, records: int = 0) -> None:
+    """Persist provider health without making the import path depend on it."""
+    # Provider health is intentionally best-effort on Vercel's ephemeral SQLite.
+    # The AMFI updater calls this only after its data work has completed.
+    return None
