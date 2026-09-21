@@ -1,3 +1,4 @@
+# FinanX deployment sync: latest GitHub revision
 from __future__ import annotations
 
 import os
