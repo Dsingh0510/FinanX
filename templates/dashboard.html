@@ -321,17 +321,16 @@ document.getElementById('tracked-modal').addEventListener('click',e=>{if(e.targe
 function isMfValue(item){ return item && item.kind==='mutual_fund'; }
 
 function renderHeroMarket(items){
- const picks=['NIFTY 50','Gold','USD/INR'];
+ const picks=['NIFTY 50','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth'];
  const byLabel=Object.fromEntries((items||[]).map(x=>[x.label,x]));
  document.getElementById('hero-market-list').innerHTML=picks.map(label=>{
    const t=byLabel[label];
    if(!t) return `<div class="hero-market-row"><span>${escapeHtml(label)}</span><b>Data unavailable</b></div>`;
    const d=t.today_change; const r=t.yoy;
-   const isGold=label==='Gold';
-   const isFx=label==='USD/INR';
-   const prefix=(isFx||isGold)?'₹':'';
+   const isMf=isMfValue(t);
+   const prefix='';
    const unit=t.unit||'';
-  const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isFx?4:2,maximumFractionDigits:isFx?4:(isMfValue(t)?4:2)})}${unit?` ${escapeHtml(unit)}`:''}`;
+  const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isMf?4:2,maximumFractionDigits:isMf?4:2})}${unit?` ${escapeHtml(unit)}`:''}`;
    const dTxt=d==null?'Reference value':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`;
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
