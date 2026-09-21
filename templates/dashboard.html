@@ -50,26 +50,13 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>Selected indices, Indian markets, currencies and representative mutual-fund values.</p>
+          <p>Live Upstox indices and equities, plus public/reference currency and commodity values where available.</p>
         </div>
       </div>
-      <div class="market-now-grid" id="market-now-grid">
-        <article class="market-now-card"><div class="market-now-top"><span>REFERENCE</span></div>
+      <div class="market-now-grid" id="market-now-grid"></div>
     </section>
 
-<section class="section comparison-section" id="comparisons">
-  <div class="section-head"><div><div class="eyebrow">LIVE COMPARISON</div><h2>Compare real market data.</h2><p>Up to 100 stocks, 100 F&O contracts, 100 mutual funds, listed bond ETFs and multiple bank FD rates.</p></div></div>
-  <div class="compare-tabs">
-    <button class="compare-tab active" data-segment="stocks">100 Stocks</button>
-    <button class="compare-tab" data-segment="fno">100 F&O</button>
-    <button class="compare-tab" data-segment="funds">100 Funds</button>
-    <button class="compare-tab" data-segment="bonds">Bonds</button>
-    <button class="compare-tab" data-segment="fd">Bank FDs</button>
-  </div>
-  <div class="compare-status" id="compare-status">Loading live comparison…</div>
-  <div class="compare-wrap"><table class="compare-table"><thead id="compare-head"></thead><tbody id="compare-body"></tbody></table></div>
-  <div class="compare-note" id="compare-note"></div>
-</section>
+
 
     <section class="section" id="planner">
       <div class="section-head">
@@ -101,7 +88,7 @@
             <div class="analysis-box" id="analysis-box">
               <div class="mini-label">MARKET ANALYSIS • YoY / 3Y CAGR / 5Y CAGR</div>
               <h4>Market performance</h4>
-              <p id="analysis-explanation">FinanX compares category performance across the instruments it tracks. Longer history is used more for longer horizons, while current values are refreshed from the available market feeds.</p>
+              <p id="analysis-explanation">Before generating a suggestion, FinanX refreshes its tracked universe: up to 100 NSE stocks, 100 F&O contracts, 100 mutual funds, up to 50 listed bond/debt instruments and multiple bank FD entries. It then uses the available historical and live signals alongside your risk, goal, liquidity and horizon.</p>
               <div id="ranked-list" class="ranked-list"></div>
               <div class="scenario-list" id="scenario-list"></div>
               <div class="analysis-note">Live market signals can change quickly. FinanX uses them as one input; your risk, horizon and liquidity remain more important than short-term price movement.</div>
@@ -325,42 +312,6 @@ function renderHeroMarket(items){
 
 renderLearn();
 refreshMarket();
-async function loadComparison(segment='stocks'){
-  document.querySelectorAll('.compare-tab').forEach(b=>b.classList.toggle('active',b.dataset.segment===segment));
-  const status=document.getElementById('compare-status'), head=document.getElementById('compare-head'), body=document.getElementById('compare-body'), note=document.getElementById('compare-note');
-  status.textContent='Loading current data…'; head.innerHTML=''; body.innerHTML=''; note.textContent='';
-  try{
-    const r=await fetch('/api/market/compare/'+segment,{cache:'no-store'});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'Comparison unavailable');
-    status.textContent=`${data.count} records • ${escapeHtml(data.source||'Live source')}`;
-    let cols=[];
-    if(segment==='stocks') cols=[['#','rank'],['Stock','name'],['Symbol','symbol'],['Price','price'],['Today','today_change'],['Volume','volume'],['52W High','year_high'],['52W Low','year_low']];
-    else if(segment==='fno') cols=[['#','rank'],['Contract','name'],['Type','type'],['Underlying','underlying'],['LTP','price'],['Today','today_change'],['Volume','volume'],['OI','oi'],['Expiry','expiry']];
-    else if(segment==='funds') cols=[['#','rank'],['Fund','scheme_name'],['NAV','latest_nav'],['1Y CAGR','return_1y'],['3Y CAGR','return_3y'],['5Y CAGR','return_5y'],['NAV Date','latest_date']];
-    else if(segment==='bonds') cols=[['#','rank'],['Bond / ETF','name'],['Symbol','symbol'],['Price','price'],['Today','today_change'],['52W High','year_high'],['52W Low','year_low']];
-    else cols=[['#','rank'],['Bank','bank'],['Tenor','tenor'],['Rate','rate'],['Senior citizen','senior_rate'],['Effective','effective']];
-    head.innerHTML='<tr>'+cols.map(x=>'<th>'+x[0]+'</th>').join('')+'</tr>';
-    const fmt=(key,v)=>{
-      if(v==null||v==='') return '—';
-      if(['today_change','return_1y','return_3y','return_5y','rate','senior_rate'].includes(key)) return Number(v).toFixed(2)+'%';
-      if(['price','latest_nav','year_high','year_low'].includes(key)) return Number(v).toLocaleString('en-IN',{maximumFractionDigits:key==='latest_nav'?4:2});
-      if(['volume','oi'].includes(key)) return Number(v).toLocaleString('en-IN');
-      return String(v);
-    };
-    body.innerHTML=(data.items||[]).map((row,i)=>'<tr>'+cols.map(x=>{
-      const v=fmt(x[1],x[1]==='rank'?(row.rank||i+1):row[x[1]]);
-      const cls=['today_change','return_1y','return_3y','return_5y','rate','senior_rate'].includes(x[1])&&row[x[1]]!=null?(Number(row[x[1]])>=0?'positive':'negative'):'';
-      return '<td class="'+cls+'">'+escapeHtml(v)+'</td>';
-    }).join('')+'</tr>').join('');
-    note.textContent=segment==='funds'?'Fund NAV and CAGR data are sourced from AMFI NAV/history. CAGR is historical, not a forecast.':
-      segment==='fd'?'FD rates are tenor-specific. Rates can change; verify the bank’s official page before booking.':
-      'Prices, volume, OI and 52-week fields are exchange snapshots from Upstox. Market may be closed, in which case the latest available exchange snapshot is shown.';
-  }catch(e){status.textContent='Could not load live comparison'; note.textContent=e.message||'Try again shortly.';}
-}
-document.querySelectorAll('.compare-tab').forEach(b=>b.addEventListener('click',()=>loadComparison(b.dataset.segment)));
-loadComparison('stocks');
-
 setInterval(refreshMarket,180000);
 // Re-check the local cache quickly after startup so background AMFI/commodity history
 // appears without making the first page wait.
