@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
-from database import save_mf_scheme, save_mf_metric, mutual_fund_metrics, set_provider_status
+from database import save_mf_scheme, save_mf_metric, mutual_fund_metrics
 
 # Official AMFI public files/endpoints.
 # NAVAll is the daily snapshot for all schemes. Historical NAV is available
@@ -383,7 +383,6 @@ def update_amfi_metrics_fast() -> dict:
                 "source":"AMFI/MFAPI quick history",
             })
             saved+=1
-        set_provider_status("amfi","ok",success=saved>0,records=saved)
         return {"success":saved,"quick":True}
     except Exception as exc:
         return {"success":0,"error":str(exc)}
