@@ -245,30 +245,27 @@ document.getElementById('planner-form').addEventListener('submit',createPlan);
 function renderMarketHighlights(items){
   const grid=document.getElementById('market-now-grid');
   if(!grid) return;
-  const wanted=['NIFTY 50','NIFTY Bank','NIFTY IT','Reliance Industries','HDFC Bank','TCS','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year'];
+  const wanted=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year'];
   const byLabel=Object.fromEntries((items||[]).map(x=>[x.label,x]));
   const display=wanted.map(x=>byLabel[x]).filter(Boolean);
-  if(!display.length){
-    grid.innerHTML='<div class="market-now-empty">Market values are temporarily unavailable.</div>';
-    return;
-  }
-  grid.innerHTML=display.map(item=>{
+  if(!display.length){grid.innerHTML='<div class="market-now-empty">Market values are temporarily unavailable.</div>';return;}
+  grid.innerHTML=display.slice(0,8).map(item=>{
     const isMf=item.kind==='mutual_fund';
     const isFd=item.kind==='fd';
     const isYield=item.kind==='bond_yield';
     const isCurrency=item.kind==='currency';
-    const isGold=item.kind==='gold';
+    const isGold=item.kind==='gold'||item.kind==='commodity';
     const prefix=(isCurrency||isGold)?'₹':'';
     const suffix=item.unit?(' '+escapeHtml(item.unit)):'';
     const value=item.value==null?'—':(isYield?Number(item.value).toFixed(2)+'%':isFd?Number(item.value).toFixed(2)+'%':prefix+Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})+suffix);
     const today=item.today_change==null?'':('<span class="'+(item.today_change>=0?'positive':'negative')+'">'+(item.today_change>=0?'+':'')+Number(item.today_change).toFixed(2)+'% today</span>');
     const date=item.date?'<span class="market-date">'+escapeHtml(String(item.date))+'</span>':'';
-    const mode=isMf?'Latest NAV':isFd?'Rate reference':isYield?'Current yield':'Current value';
+    const freshness=item.freshness==='live'?'LIVE':isMf?'Daily NAV':isFd?'Rate reference':'Latest available';
     return '<article class="market-now-card">'+
-      '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':'MARKET')+'</span>'+today+'</div>'+
+      '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':isGold?'COMMODITY':'MARKET')+'</span>'+today+'</div>'+
       '<h3>'+escapeHtml(item.label)+'</h3>'+
       '<div class="market-now-value">'+value+'</div>'+
-      '<div class="market-now-meta">'+date+(date?' • ':'')+mode+'</div>'+
+      '<div class="market-now-meta">'+date+(date?' • ':'')+freshness+'</div>'+
     '</article>';
   }).join('');
 }
@@ -321,7 +318,7 @@ document.getElementById('tracked-modal').addEventListener('click',e=>{if(e.targe
 function isMfValue(item){ return item && item.kind==='mutual_fund'; }
 
 function renderHeroMarket(items){
- const picks=['NIFTY 50','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth'];
+ const picks=['NIFTY 50','Gold','USD/INR'];
  const byLabel=Object.fromEntries((items||[]).map(x=>[x.label,x]));
  document.getElementById('hero-market-list').innerHTML=picks.map(label=>{
    const t=byLabel[label];
