@@ -197,11 +197,16 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None)
         if category == "mutual-funds":
             try:
                 from database import mutual_fund_metrics
+                cached_rows = mutual_fund_metrics()
                 target_name = str(row.get("name", "")).strip().lower()
+                target_code = str(row.get("scheme_code", "")).split("|")[-1].strip()
                 cached = next(
                     (
-                        x for x in mutual_fund_metrics()
-                        if str(x.get("scheme_name", "")).strip().lower() == target_name
+                        x for x in cached_rows
+                        if (
+                            str(x.get("scheme_code", "")).strip() == target_code
+                            or str(x.get("scheme_name", "")).strip().lower() == target_name
+                        )
                         and any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
                     ),
                     None,
