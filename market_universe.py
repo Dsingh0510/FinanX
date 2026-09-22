@@ -80,6 +80,22 @@ def _quotes(keys):
     return _cache_get(_QUOTE_CACHE, cache_key, load, QUOTE_TTL)
 
 
+def _lookup_quote(quotes, key):
+    if not key:
+        return {}
+    variants = (
+        key,
+        key.replace("|", ":"),
+        key.replace(":", "|"),
+        key.replace("NSE_INDEX|", "NSE_INDEX:"),
+    )
+    for variant in variants:
+        row = quotes.get(variant)
+        if isinstance(row, dict):
+            return row
+    return {}
+
+
 def _quote_value(row):
     ltp = row.get("last_price")
     prev = row.get("prev_close_price")
@@ -134,7 +150,7 @@ def compare_stocks():
     output = []
     for row in rows:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -572,61 +588,66 @@ def _nearest_future_by_terms(rows, terms):
 
 
 def market_now():
-    """Build a broad live Market Now board from one batched Upstox quote request."""
-    # Fixed, high-value indices first.
+    """Build a broad live Market Now board from the Upstox instrument master."""
     targets = []
-    seen_keys = set()
+    seen = set()
 
-    def add_target(label, key, kind, unit=None):
-        if not key or key in seen_keys:
+    def add(label, key, kind, unit=None):
+        if not key or key in seen:
             return
-        seen_keys.add(key)
+        seen.add(key)
         targets.append((label, key, kind, unit))
 
-    index_specs = [
+    # Indices
+    for label, terms in [
         ("NIFTY 50", ("NIFTY 50",)),
         ("NIFTY Bank", ("NIFTY BANK", "BANK NIFTY")),
         ("NIFTY IT", ("NIFTY IT",)),
         ("India VIX", ("INDIA VIX",)),
-        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100", "NIFTY MIDCAP")),
-        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100", "NIFTY SMALLCAP")),
-    ]
-    for label, terms in index_specs:
-        add_target(label, _index_key_from_terms(*terms), "index")
+        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100",)),
+        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100",)),
+    ]:
+        add(label, _index_key_from_terms(*terms), "index")
 
-    # Selected liquid equities.
-    eq_rows = [
-        x for x in instruments()
-        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
-    ]
+    # Selected equities
+    eq_rows = [x for x in instruments() if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
     by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
-    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"):
+    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN", "ICICIBANK"):
         row = by_symbol.get(symbol)
         if row:
-            add_target(
-                row.get("short_name") or row.get("name") or symbol,
-                _instrument_key(row),
-                "equity",
-            )
+            add(row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity")
 
-    # Commodities: take the nearest contract for each distinct liquid underlying.
-    active_mcx = _active_rows({"MCX_FO"}, {"FUT"})
-    commodity_terms = [
-        ("Gold", ("GOLD",)),
-        ("Silver", ("SILVER",)),
-        ("Crude Oil", ("CRUDE", "CRUDEOIL")),
-        ("Copper", ("COPPER",)),
-        ("Natural Gas", ("NATURAL GAS", "NATGAS")),
-        ("Zinc", ("ZINC",)),
-        ("Aluminium", ("ALUMINIUM", "ALUMINI")),
+    all_futures = [
+        x for x in instruments()
+        if str(x.get("instrument_type", "")).upper() == "FUT"
     ]
-    for label, terms in commodity_terms:
-        item = _nearest_future_by_terms(active_mcx, terms)
-        if item:
-            add_target(label, _instrument_key(item), "commodity", "/10g" if label == "Gold" else None)
 
-    # Currencies: select several actively traded INR pairs.
-    active_fx = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+    # Commodities: search by instrument text, not just one segment label.
+    commodity_specs = [
+        ("Gold", ("GOLD",), "/10g"),
+        ("Silver", ("SILVER",), None),
+        ("Crude Oil", ("CRUDEOIL", "CRUDE OIL", "CRUDE"), None),
+        ("Copper", ("COPPER",), None),
+        ("Natural Gas", ("NATURALGAS", "NATURAL GAS", "NATGAS"), None),
+        ("Zinc", ("ZINC",), None),
+        ("Aluminium", ("ALUMINIUM", "ALUMINI"), None),
+    ]
+    for label, terms, unit in commodity_specs:
+        rows = [
+            x for x in all_futures
+            if str(x.get("segment", "")).upper().startswith("MCX")
+            and any(term in (
+                str(x.get("underlying_symbol", "")).upper()
+                + " " + str(x.get("name", "")).upper()
+                + " " + str(x.get("trading_symbol", "")).upper()
+            ) for term in terms)
+        ]
+        item = _find_nearest_future(rows, lambda x: True)
+        if item:
+            add(label, _instrument_key(item), "commodity", unit)
+
+    # Currencies: match the pair in the symbol/text regardless of which
+    # currency-futures segment name Upstox uses.
     currency_specs = [
         ("USD/INR", ("USDINR",)),
         ("EUR/INR", ("EURINR",)),
@@ -636,31 +657,32 @@ def market_now():
         ("CNY/INR", ("CNYINR",)),
     ]
     for label, terms in currency_specs:
-        item = _nearest_future_by_terms(active_fx, terms)
+        rows = [
+            x for x in all_futures
+            if any(term in (
+                str(x.get("underlying_symbol", "")).upper()
+                + " " + str(x.get("name", "")).upper()
+                + " " + str(x.get("trading_symbol", "")).upper()
+            ) for term in terms)
+        ]
+        item = _find_nearest_future(rows, lambda x: True)
         if item:
-            add_target(label, _instrument_key(item), "currency", None)
+            add(label, _instrument_key(item), "currency")
 
-    # Bonds: resolve up to five currently quoted listed bond/debt instruments,
-    # but use the same single quote request as all other cards.
-    try:
-        bond_rows = _bond_instruments(30)
-        for row in bond_rows:
-            add_target(
-                row.get("short_name") or row.get("name") or row.get("trading_symbol") or "Listed Bond",
-                _instrument_key(row),
-                "bond",
-            )
-            if sum(1 for x in targets if x[2] == "bond") >= 5:
-                break
-    except Exception:
-        pass
+    # Listed bond/debt instruments.
+    for row in _bond_instruments(20):
+        add(
+            row.get("short_name") or row.get("name") or row.get("trading_symbol") or "Listed Bond",
+            _instrument_key(row),
+            "bond",
+        )
+        if sum(1 for x in targets if x[2] == "bond") >= 5:
+            break
 
-    # One batched Upstox quote call for everything on the board.
     quotes = _quotes([key for _, key, _, _ in targets])
-
     output = []
     for label, key, kind, unit in targets:
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -675,4 +697,3 @@ def market_now():
         })
 
     return output
-
