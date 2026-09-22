@@ -521,6 +521,8 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
             basis = f'Bond data • {sample_size} tracked' + (f' • 10Y yield {float(cy):.2f}%' if cy is not None else '')
         elif row['category'] == 'fd' and sample_size:
             basis = f'Official rate table • {sample_size} entries'
+        elif row['category'] == 'fno' and (row.get('metrics') or {}).get('available'):
+            basis = 'Underlying market history • Upstox'
         elif row.get('data_status') == 'fallback':
             basis = 'Fallback market history'
         elif (row.get('metrics') or {}).get('available'):
