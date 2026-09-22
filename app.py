@@ -112,9 +112,21 @@ def analyze_fast():
             result['explanation'] = 'Quick allocation shown from your profile while the cached full market analysis refreshes.'
             result['provisional'] = True
         else:
-            result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
+            try:
+                result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
+            except Exception:
+                from allocation_engine import build_portfolio
+                result = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
+                result['projected_value'] = None
+                result['projected_gain'] = None
+                result['annual_return_estimate'] = None
+                result['projected_3y_value'] = None
+                result['projected_5y_value'] = None
+                result['ranked_categories'] = []
+                result['selected_entities'] = []
+                result['scenario_comparison'] = []
             result['provisional'] = True
-            result['explanation'] = 'Quick result from the cached market analysis; the full tracked-universe result will replace it.'
+            result['explanation'] = 'Quick plan generated from your inputs while market analysis refreshes.'
         return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), **result})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -132,9 +144,13 @@ def analyze():
         liquidity = str(p.get('liquidity', 'medium')).lower()
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
-        market = _engine().category_market_analysis(allow_stale=True)
+        engine = _engine()
+        if engine.__name__ == 'vercel_market':
+            market = engine.category_market_analysis()
+        else:
+            market = engine.category_market_analysis(allow_stale=True)
         tracking = market.get('_tracking') or {}
-        if _engine().__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
+        if engine.__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
             return jsonify({
                 'error': 'FinanX has not completed its configured tracking universe yet.',
                 'message': tracking.get('message'),
@@ -151,7 +167,8 @@ def analyze():
 @app.post('/api/market/warm')
 def warm_market():
     try:
-        market = _engine().category_market_analysis(force=True)
+        engine = _engine()
+        market = engine.category_market_analysis() if engine.__name__ == 'vercel_market' else engine.category_market_analysis(force=True)
         return jsonify({
             'success': True,
             'ready': True,

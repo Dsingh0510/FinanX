@@ -232,7 +232,24 @@ async function createPlan(e){
    // Fast phase: show a usable allocation immediately.
    const fr=await fetch('/api/analyze/fast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
    const fast=await fr.json();
-   if(fr.ok) renderPlanResult(fast);
+   if(fr.ok && fast && Array.isArray(fast.allocations)) {
+     renderPlanResult(fast);
+   } else {
+     const fallback=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+     const basePlan=await fallback.json();
+     if(!fallback.ok) throw new Error(basePlan.error||'Plan service unavailable');
+     basePlan.provisional=true;
+     basePlan.explanation='Plan generated from your inputs. Market performance will update when current market analysis is available.';
+     basePlan.annual_return_estimate=null;
+     basePlan.projected_value=null;
+     basePlan.projected_gain=null;
+     basePlan.projected_3y_value=null;
+     basePlan.projected_5y_value=null;
+     basePlan.ranked_categories=[];
+     basePlan.selected_entities=[];
+     basePlan.scenario_comparison=[];
+     renderPlanResult(basePlan);
+   }
 
    // Full phase: warm the complete tracked universe, then silently replace
    // the quick result with the full tracked-history result.
