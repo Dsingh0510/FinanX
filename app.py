@@ -72,55 +72,68 @@ def analyze_fast():
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
 
+        from allocation_engine import build_portfolio
         import upstox_adapter as _ua
+
+        base = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
         market = _ua._ANALYSIS if _ua._ANALYSIS is not None else None
-        if market is None:
-            from allocation_engine import build_portfolio
-            quick = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
-            # Project the quick allocation with conservative category planning rates.
-            rates = {'fd':6.25,'bonds':7.0,'mutual-funds':10.0,'gold':7.0,'stocks':10.0,'commodities':6.0,'currency':3.0,'fno':0.0}
-            projected = 0.0
-            rows = []
-            for item in quick['allocations']:
-                rate = rates.get(item['slug'],6.0)
-                value = item['amount'] * ((1 + rate/100) ** horizon)
-                projected += value
-                rows.append({
-                    'slug': item['slug'], 'asset': item['asset'], 'percent': item['percent'],
-                    'amount': item['amount'], 'annual_return_estimate': rate,
-                    'projected_value': round(value,2), 'projected_gain': round(value-item['amount'],2),
-                    'yoy_return': None, 'three_year_return': None, 'five_year_return': None,
-                    'basis': 'Quick cached planning model',
-                })
-            result = dict(quick)
-            result['allocations'] = rows
-            result['projected_value'] = round(projected,2)
-            result['projected_gain'] = round(projected-amount,2)
-            result['annual_return_estimate'] = round((projected/amount)**(1/max(horizon,1))*100-100,2) if amount else 0
-            result['projected_3y_value'] = None
-            result['projected_5y_value'] = None
-            result['ranked_categories'] = []
-            result['selected_entities'] = []
-            result['scenario_comparison'] = []
-            result['explanation'] = 'Quick allocation shown from your profile while the cached full market analysis refreshes.'
-            result['provisional'] = True
-        else:
+
+        if market is not None:
             try:
-                result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
+                result = build_market_adjusted_plan(
+                    amount, horizon, risk, liquidity, goal, emergency, market
+                )
+                result["provisional"] = False
+                result["explanation"] = (
+                    "Plan generated using the available tracked Upstox market analysis "
+                    "and your selected risk, horizon, liquidity and goal."
+                )
+                return jsonify({
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    **result,
+                })
             except Exception:
-                from allocation_engine import build_portfolio
-                result = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
-                result['projected_value'] = None
-                result['projected_gain'] = None
-                result['annual_return_estimate'] = None
-                result['projected_3y_value'] = None
-                result['projected_5y_value'] = None
-                result['ranked_categories'] = []
-                result['selected_entities'] = []
-                result['scenario_comparison'] = []
-            result['provisional'] = True
-            result['explanation'] = 'Quick plan generated from your inputs while market analysis refreshes.'
-        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), **result})
+                pass
+
+        # Guaranteed profile-based plan while the Upstox tracked-history average
+        # is being refreshed.
+        for item in base["allocations"]:
+            rate = {
+                "fd": 6.25, "bonds": 7.0, "mutual-funds": 10.0,
+                "gold": 7.0, "stocks": 10.0, "commodities": 6.0,
+                "currency": 3.0, "fno": 0.0,
+            }.get(item["slug"], 6.0)
+            value = item["amount"] * ((1 + rate / 100) ** horizon)
+            item.update({
+                "annual_return_estimate": rate,
+                "projected_value": round(value, 2),
+                "projected_gain": round(value - item["amount"], 2),
+                "yoy_return": None,
+                "three_year_return": None,
+                "five_year_return": None,
+                "basis": "Profile allocation while Upstox history refreshes",
+            })
+        projected = sum(x["projected_value"] for x in base["allocations"])
+        result = dict(base)
+        result["projected_value"] = round(projected, 2)
+        result["projected_gain"] = round(projected - amount, 2)
+        result["annual_return_estimate"] = round(
+            ((projected / amount) ** (1 / max(horizon, 1)) - 1) * 100, 2
+        )
+        result["projected_3y_value"] = None
+        result["projected_5y_value"] = None
+        result["ranked_categories"] = []
+        result["selected_entities"] = []
+        result["scenario_comparison"] = []
+        result["provisional"] = True
+        result["explanation"] = (
+            "Profile-based allocation shown immediately. Full market analysis "
+            "will use averages from the tracked Upstox universe when history is ready."
+        )
+        return jsonify({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            **result,
+        })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:

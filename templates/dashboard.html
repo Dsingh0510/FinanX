@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>Live market values from the Upstox feed.</p>
+          <p>Current market values from Upstox.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -229,35 +229,50 @@ async function createPlan(e){
  if(allocationChart)allocationChart.destroy();
 
  try{
-   // Fast phase: show a usable allocation immediately.
-   const fr=await fetch('/api/analyze/fast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
-   const fast=await fr.json();
-   if(fr.ok && fast && Array.isArray(fast.allocations)) {
-     renderPlanResult(fast);
-   } else {
-     const fallback=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
-     const basePlan=await fallback.json();
-     if(!fallback.ok) throw new Error(basePlan.error||'Plan service unavailable');
-     basePlan.provisional=true;
-     basePlan.explanation='Plan generated from your inputs. Market performance will update when current market analysis is available.';
-     basePlan.annual_return_estimate=null;
-     basePlan.projected_value=null;
-     basePlan.projected_gain=null;
-     basePlan.projected_3y_value=null;
-     basePlan.projected_5y_value=null;
-     basePlan.ranked_categories=[];
-     basePlan.selected_entities=[];
-     basePlan.scenario_comparison=[];
-     renderPlanResult(basePlan);
-   }
+   // Render the input-based plan first so plan generation never waits on market data.
+   const baseResponse=await fetch('/api/plan',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify(payload),
+     cache:'no-store'
+   });
+   const basePlan=await baseResponse.json();
+   if(!baseResponse.ok) throw new Error(basePlan.error||'Plan service unavailable');
+   basePlan.provisional=true;
+   basePlan.annual_return_estimate=null;
+   basePlan.projected_value=null;
+   basePlan.projected_gain=null;
+   basePlan.projected_3y_value=null;
+   basePlan.projected_5y_value=null;
+   basePlan.ranked_categories=[];
+   basePlan.selected_entities=[];
+   basePlan.scenario_comparison=[];
+   basePlan.explanation='Your profile-based allocation is ready. FinanX is now loading average market performance from the tracked Upstox universe.';
+   renderPlanResult(basePlan);
 
-   // Full phase: warm the complete tracked universe, then silently replace
-   // the quick result with the full tracked-history result.
-   fetch('/api/market/warm',{method:'POST',keepalive:true,cache:'no-store'})
-     .then(()=>fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}))
-     .then(r=>r.json())
-     .then(full=>{ if(full && full.allocations) renderPlanResult(full); })
-     .catch(()=>{});
+   // Then ask for the fast Upstox-enriched plan. If market history is not ready,
+   // the backend still returns the base plan rather than failing the UI.
+   fetch('/api/analyze/fast',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify(payload),
+     cache:'no-store'
+   })
+   .then(r=>r.json())
+   .then(fast=>{ if(fast && Array.isArray(fast.allocations)) renderPlanResult(fast); })
+   .catch(()=>{});
+
+   // Full phase: calculate the tracked-universe average once and replace the
+   // provisional plan when the complete Upstox analysis is ready.
+   fetch('/api/analyze',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify(payload),
+     cache:'no-store'
+   })
+   .then(r=>r.json())
+   .then(full=>{ if(full && Array.isArray(full.allocations)) renderPlanResult(full); })
+   .catch(()=>{});
  }catch(err){
    document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
    document.getElementById('allocation-list').innerHTML='';

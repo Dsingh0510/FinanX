@@ -5,6 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
+import threading
 
 import requests
 
@@ -33,6 +34,7 @@ _SNAPSHOT = None
 _SNAPSHOT_AT = 0.0
 _ANALYSIS = None
 _ANALYSIS_AT = 0.0
+_HISTORY_GATE = threading.BoundedSemaphore(8)
 
 
 def configured() -> bool:
@@ -158,7 +160,8 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         if not key:
             return item
         try:
-            metrics = _metrics(_series(key, unit="months"))
+            with _HISTORY_GATE:
+                metrics = _metrics(_series(key, unit="months"))
             if metrics.get("available"):
                 item.update(metrics)
                 item["history_source"] = "Upstox historical candles"
@@ -166,7 +169,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
             pass
         return item
     out = []
-    with ThreadPoolExecutor(max_workers=min(20, len(candidates))) as pool:
+    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
         futures=[pool.submit(work,row) for row in candidates]
         for future in as_completed(futures):
             try: out.append(future.result())

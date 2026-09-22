@@ -129,6 +129,31 @@ def _lookup_quote(quotes, key):
     return {}
 
 
+_SINGLE_QUOTE_TTL = 15
+
+
+def _quote_one(key):
+    """Fetch exactly one current Upstox quote for a display card."""
+    if not key:
+        return {}
+    def load():
+        try:
+            payload = _get(
+                f"{BASE}/market-quote/quotes",
+                {"instrument_key": key},
+                timeout=10,
+            )
+            data = payload.get("data") or {}
+            if data:
+                # Upstox keys responses by EXCHANGE:SYMBOL; avoid depending
+                # on a single exact spelling.
+                return next(iter(data.values())) if len(data) == 1 else _lookup_quote(data, key)
+        except Exception:
+            return {}
+        return {}
+    return _cache_get(_QUOTE_CACHE, "single:" + key, load, _SINGLE_QUOTE_TTL)
+
+
 def _quote_value(row):
     ltp = row.get("last_price")
     prev = row.get("prev_close_price")
@@ -689,15 +714,25 @@ def market_now():
         add(row.get("short_name") or row.get("name") or symbol or "Listed Bond",_instrument_key(row),"bond")
         if sum(1 for x in targets if x[2]=="bond")>=5: break
 
-    quote_keys=[key for _,key,_,_ in targets if key]
-    try:
-        quotes=_quotes(quote_keys)
-    except Exception:
-        quotes={}
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    output_by_key = {}
+    quote_targets = [(label, key, kind, unit) for label, key, kind, unit in targets if key]
+    with ThreadPoolExecutor(max_workers=min(8, len(quote_targets) or 1)) as pool:
+        futures = {
+            pool.submit(_quote_one, key): (label, key, kind, unit)
+            for label, key, kind, unit in quote_targets
+        }
+        for future in as_completed(futures):
+            label, key, kind, unit = futures[future]
+            try:
+                output_by_key[key] = future.result()
+            except Exception:
+                output_by_key[key] = {}
 
     output=[]
     for label,key,kind,unit in targets:
-        q=_lookup_quote(quotes,key)
+        q=output_by_key.get(key, {}) if key else {}
         ltp,change=_quote_value(q)
         if ltp is None:
             output.append({
@@ -708,10 +743,11 @@ def market_now():
             continue
         output.append({
             "label":label,
-            "value":round(float(ltp),4 if kind in ("currency","commodity") else 2),
+            "value":round(float(ltp),4 if kind=="currency" else 2),
             "today_change":round(change,2) if change is not None else None,
             "kind":kind,"unit":unit,"freshness":"live",
-            "instrument_key":key,"date":None,
+            "instrument_key":key,
+            "date":None,
         })
 
     order={label:i for i,(label,*_) in enumerate(targets)}
