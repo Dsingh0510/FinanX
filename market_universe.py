@@ -262,6 +262,14 @@ def history_universe():
             nearest = min(expiries)
             fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
 
+    gold_rows = [
+        x for x in _active_rows({"MCX_FO"}, {"FUT"})
+        if "GOLD" in (
+            str(x.get("underlying_symbol", "")).upper()
+            + " " + str(x.get("name", "")).upper()
+            + " " + str(x.get("trading_symbol", "")).upper()
+        )
+    ][:5]
     commodity_rows = _active_rows({"MCX_FO"}, {"FUT"})[:50]
     currency_rows = [
         r for r in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
@@ -272,6 +280,7 @@ def history_universe():
         "stocks": _eq_instruments()[:100],
         "bonds": _bond_instruments(50),
         "mutual-funds": compare_mutual_funds(100),
+        "gold": gold_rows,
         "commodities": commodity_rows,
         "currency": currency_rows,
         "fno": fno_rows[:100],
