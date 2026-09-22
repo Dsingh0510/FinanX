@@ -760,7 +760,7 @@ def market_now():
         ("NIFTY Midcap 100", ("NIFTY MIDCAP 100", "NIFTY MIDCAP")),
         ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100", "NIFTY SMALLCAP")),
     ]:
-        add(label, _index_key_from_terms(*terms), "index")
+        add(label, _index_key_from_terms(*terms), "index", None, None, _PUBLIC_SYMBOLS.get(label))
 
     # Equities
     eq_rows = [
@@ -816,7 +816,7 @@ def market_now():
                 master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
             except (TypeError, ValueError):
                 master_price = None
-            add(label, _instrument_key(item), "commodity", unit, master_price)
+            add(label, _instrument_key(item), "commodity", unit, master_price, _PUBLIC_SYMBOLS.get(label))
 
     # Currencies
     for label, terms in [
@@ -844,7 +844,7 @@ def market_now():
                 master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
             except (TypeError, ValueError):
                 master_price = None
-            add(label, _instrument_key(item), "currency", None, master_price)
+            add(label, _instrument_key(item), "currency", None, master_price, _PUBLIC_SYMBOLS.get(label))
 
     # Listed bonds/debt. Keep five distinct names.
     bond_rows = _bond_instruments(25)
