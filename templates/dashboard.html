@@ -319,9 +319,7 @@ async function openTrackedModal(title, slug){
     if(!r.ok) throw new Error(data.message||'Tracking data unavailable');
     const cat=data.category || ((data.categories||{})[slug]);
     if(!cat || !Array.isArray(cat.names)) throw new Error('No tracked entities are available for this segment.');
-    const count=cat.tracked!=null ? (cat.tracked + (cat.target ? ' / '+cat.target : '') + ' tracked') : 'Tracked entities';
-    list.innerHTML='<div class="tracked-list-head"><span>'+escapeHtml(count)+'</span><small>'+escapeHtml(cat.source||'Backend tracking')+'</small></div>'+
-      cat.names.map((name,i)=>'<div class="tracked-item"><span>'+(i+1)+'</span><b>'+escapeHtml(name)+'</b></div>').join('');
+    list.innerHTML=cat.names.map((name,i)=>'<div class="tracked-item"><span>'+(i+1)+'</span><b>'+escapeHtml(name)+'</b></div>').join('');
   }catch(e){
     list.innerHTML='<div class="tracked-empty">'+escapeHtml(e.message||'Tracking data unavailable. Try again shortly.')+'</div>';
   }
