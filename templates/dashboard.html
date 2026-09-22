@@ -37,9 +37,9 @@
         <div class="example-amount" id="hero-market-title">Market trends</div>
         <div class="mini-caption">A quick view before you build your plan</div>
         <div class="hero-market-list" id="hero-market-list">
-          <div class="hero-market-row"><span>NIFTY 50<small>23,346.40 • reference</small></span><b>Reference value</b></div>
-          <div class="hero-market-row"><span>Gold</span><b>Loading…</b></div>
-          <div class="hero-market-row"><span>USD/INR</span><b>Loading…</b></div>
+          <div class="hero-market-row"><span>NIFTY 50<small>Loading…</small></span><b>LIVE</b></div>
+          <div class="hero-market-row"><span>Gold<small>Loading…</small></span><b>LIVE</b></div>
+          <div class="hero-market-row"><span>USD/INR<small>Loading…</small></span><b>LIVE</b></div>
         </div>
         <div class="tiny-note">Market movement is shown as a signal; it does not guarantee future returns.</div>
       </div>
@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>8 market values at a glance across indices, stocks, a mutual fund NAV and a bank FD rate.</p>
+          <p>9 live market values at a glance from the connected market feed.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -80,15 +80,9 @@
           </form>
         </div>
         <div class="panel result-panel" id="plan-panel">
-          <div id="analysis-loader" class="analysis-loader hidden" aria-live="polite">
+          <div id="analysis-loader" class="analysis-loader hidden" aria-hidden="true">
             <div class="loader-orbit"><span></span><span></span><span></span></div>
-            <div class="analysis-loader-copy">
-              <strong id="analysis-loader-title">Analysing your plan…</strong>
-              <span id="analysis-loader-text">Scanning the tracked market universe.</span>
-            </div>
-            <div class="analysis-loader-steps">
-              <span>Market data</span><span>Risk screen</span><span>Entity selection</span><span>Projection</span>
-            </div>
+            <div class="loader-bars"><i></i><i></i><i></i><i></i></div>
           </div>
           <div class="empty-state" id="empty-state"><div class="empty-icon">◎</div><h3>Your plan will appear here.</h3><p>Enter your amount and preferences. FinanX will generate an illustrative allocation with a clear explanation of why each category is included.</p></div>
           <div id="plan-content" class="hidden">
@@ -187,34 +181,13 @@ document.getElementById('modal-close').onclick=()=>document.getElementById('info
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
 
 
-let loaderTimer = null;
 function setAnalysisLoading(on){
  const loader=document.getElementById('analysis-loader');
- const title=document.getElementById('analysis-loader-title');
- const textEl=document.getElementById('analysis-loader-text');
  const button=document.querySelector('#planner-form button[type="submit"]');
  if(!loader) return;
- if(on){
-   loader.classList.remove('hidden');
-   if(button) button.disabled=true;
-   const messages=[
-     ['Analysing your plan…','Scanning the tracked market universe.'],
-     ['Screening the market…','Comparing live quotes, NAVs and available rates.'],
-     ['Applying your risk profile…','Filtering candidates by risk, horizon, liquidity and goal.'],
-     ['Selecting entities…','Ranking the tracked options inside each segment.'],
-     ['Calculating projections…','Calculating the portfolio return and future values.']
-   ];
-   let i=0;
-   const tick=()=>{ if(!loader.classList.contains('hidden')){ title.textContent=messages[i][0]; textEl.textContent=messages[i][1]; i=(i+1)%messages.length; } };
-   tick();
-   clearInterval(loaderTimer);
-   loaderTimer=setInterval(tick,1100);
- }else{
-   loader.classList.add('hidden');
-   if(button) button.disabled=false;
-   clearInterval(loaderTimer);
-   loaderTimer=null;
- }
+ loader.classList.toggle('hidden',!on);
+ loader.setAttribute('aria-hidden', on?'false':'true');
+ if(button) button.disabled=on;
 }
 
 async function createPlan(e){
@@ -247,13 +220,13 @@ async function createPlan(e){
      document.getElementById('proj-invested').textContent='₹'+money.format(analysis.amount);
      document.getElementById('proj-rate').textContent=(analysis.annual_return_estimate!=null?analysis.annual_return_estimate.toFixed(1)+'% / year':'—');
      document.getElementById('proj-horizon-value').textContent=(analysis.projected_value!=null?'₹'+money.format(analysis.projected_value):'—');
-     document.getElementById('allocation-list').innerHTML=`<div class="breakup-head"><span>Investment breakup</span><span>Value after horizon</span></div>` + analysis.allocations.map(a=>{const picks=(a.selected_options||[]).slice(0,3).join(' • '); return `<div class="alloc-row alloc-return-row"><div><strong>${escapeHtml(a.asset)}</strong><span>Invested ₹${money.format(a.amount)} • ${a.percent}% of portfolio</span>${picks?`<small>Selected from tracked data: ${escapeHtml(picks)}${(a.selected_options||[]).length>3?' • +more':''}</small>`:''}</div><div class="alloc-return"><b>₹${money.format(a.projected_value)}</b><small>After ${analysis.horizon} years • est. gain ₹${money.format(a.projected_gain)}</small></div></div>`;}).join('');
+     document.getElementById('allocation-list').innerHTML=`<div class="breakup-head"><span>Investment breakup</span><span>Value after horizon</span></div>` + analysis.allocations.map(a=>{return `<div class="alloc-row alloc-return-row"><div><strong>${escapeHtml(a.asset)}</strong><span>Invested ₹${money.format(a.amount)} • ${a.percent}% of portfolio</span></div><div class="alloc-return"><b>₹${money.format(a.projected_value)}</b><small>After ${analysis.horizon} years • est. gain ₹${money.format(a.projected_gain)}</small></div></div>`;}).join('');
      const selectedLabels=analysis.allocations.map(a=>a.asset), selectedVals=analysis.allocations.map(a=>a.percent);
      if(allocationChart)allocationChart.destroy();
      allocationChart=new Chart(document.getElementById('allocationChart'),{type:'doughnut',data:{labels:selectedLabels,datasets:[{data:selectedVals,backgroundColor:['#111827','#2563eb','#10b981','#f59e0b','#7c3aed','#ef4444','#0ea5e9','#94a3b8'],borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{boxWidth:12,usePointStyle:true,font:{family:'DM Sans'}}}},cutout:'68%'}});
      const rows=analysis.ranked_categories.slice(0,8);
      document.getElementById('ranked-list').innerHTML=`<div class="market-analysis-head"><span>Investment segment</span><span>YoY</span><span>3Y</span><span>5Y</span></div>` + rows.map((r)=>{
-       const fmt=v=>v==null?'Not enough data':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
+       const fmt=v=>v==null?'—':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
        const cls=v=>v==null?'pending':(v>=0?'positive':'negative');
        return `<div class="analysis-row">
          <div class="analysis-asset">
@@ -288,11 +261,11 @@ document.getElementById('planner-form').addEventListener('submit',createPlan);
 function renderMarketHighlights(items){
   const grid=document.getElementById('market-now-grid');
   if(!grid) return;
-  const wanted=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','HDFC Bank','HDFC Flexi Cap Fund • Direct Growth','SBI FD • 1 Year'];
+  const wanted=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','Reliance Industries','HDFC Bank','TCS','India VIX'];
   const byLabel=Object.fromEntries((items||[]).map(x=>[x.label,x]));
   const display=wanted.map(x=>byLabel[x]).filter(Boolean);
   if(!display.length){grid.innerHTML='<div class="market-now-empty">Market values are temporarily unavailable.</div>';return;}
-  grid.innerHTML=display.slice(0,8).map(item=>{
+  grid.innerHTML=display.slice(0,9).map(item=>{
     const isMf=item.kind==='mutual_fund';
     const isFd=item.kind==='fd';
     const isYield=item.kind==='bond_yield';
@@ -371,7 +344,7 @@ function renderHeroMarket(items){
    const prefix='';
    const unit=t.unit||'';
   const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isMf?4:2,maximumFractionDigits:isMf?4:2})}${unit?` ${escapeHtml(unit)}`:''}`;
-   const dTxt=d==null?'Reference value':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`;
+   const dTxt=t.freshness==='live'?(d==null?'LIVE':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`):(d==null?'Latest available':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`);
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
    return `<div class="hero-market-row"><span>${escapeHtml(label)}<small>${valueTxt}${rTxt}</small></span><b class="${cls}">${dTxt}</b></div>`;
