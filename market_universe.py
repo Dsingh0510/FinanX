@@ -92,8 +92,18 @@ def _quotes(keys):
     out = {}
     misses = []
     for key in unique:
-        hit = _QUOTE_ITEM_CACHE.get(key)
-        if hit and now - hit[0] < QUOTE_TTL:
+        hit = None
+        for variant in (
+            key,
+            key.replace("|", ":"),
+            key.replace(":", "|"),
+            key.replace("NSE_INDEX|", "NSE_INDEX:"),
+        ):
+            candidate = _QUOTE_ITEM_CACHE.get(variant)
+            if candidate and now - candidate[0] < QUOTE_TTL:
+                hit = candidate
+                break
+        if hit:
             out[key] = hit[1]
         else:
             misses.append(key)
