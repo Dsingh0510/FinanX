@@ -514,21 +514,30 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
         p = _planning_rate(row['category'], row.get('metrics') or {})
         sample_size = int((row.get('metrics') or {}).get('sample_size') or 0)
 
-        if row['category'] == 'mutual-funds' and sample_size:
-            basis = f'AMFI history • {sample_size} funds'
-        elif row['category'] == 'bonds' and sample_size:
-            cy = (row.get('metrics') or {}).get('current_yield')
-            basis = f'Bond data • {sample_size} tracked' + (f' • 10Y yield {float(cy):.2f}%' if cy is not None else '')
+        m = row.get('metrics') or {}
+        tracked = int(m.get('tracked_count') or sample_size or 0)
+        history_count = int(m.get('history_count') or sample_size or 0)
+        coverage = f'{history_count}/{tracked}' if tracked else str(history_count)
+        if row['category'] == 'mutual-funds' and history_count:
+            basis = f'Average of {coverage} tracked funds'
+        elif row['category'] == 'bonds' and history_count:
+            basis = f'Average of {coverage} tracked bonds'
         elif row['category'] == 'fd' and sample_size:
-            basis = f'Official rate table • {sample_size} entries'
-        elif row['category'] == 'fno' and (row.get('metrics') or {}).get('available'):
-            basis = 'Underlying market history • Upstox'
+            basis = f'Average of {sample_size} official rate entries'
+        elif row['category'] == 'fno' and history_count:
+            basis = f'Average of {coverage} tracked F&O underlyings'
+        elif row['category'] == 'commodities' and history_count:
+            basis = f'Average of {coverage} tracked commodities'
+        elif row['category'] == 'currency' and history_count:
+            basis = f'Average of {coverage} tracked currency contracts'
+        elif row['category'] == 'stocks' and history_count:
+            basis = f'Average of {coverage} tracked stocks'
         elif row.get('data_status') == 'fallback':
-            basis = 'Fallback market history'
-        elif (row.get('metrics') or {}).get('available'):
-            basis = 'Upstox market history'
+            basis = 'Fallback average market history'
+        elif m.get('available'):
+            basis = 'Average tracked market history'
         else:
-            basis = 'History unavailable • planning rate used for projection'
+            basis = 'History unavailable • planning rate used only for projection'
 
         ranked_options = _rank_entity_options(row['category'], market_analysis.get(row['category'], {}), risk, horizon, goal)
         ranked.append({
