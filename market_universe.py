@@ -548,61 +548,65 @@ def _find_nearest_future(rows, matcher):
 
 
 def market_now():
-    """Build exactly nine market cards from Upstox first."""
+    """Build an expanded live Market Now board from Upstox."""
     targets = [
         ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
         ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
         ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
     ]
 
-    # Resolve only the five equity cards needed for Market Now instead of
-    # requesting the entire stock universe.
-    eq = [
+    eq_rows = [
         x for x in instruments()
         if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
     ]
-    wanted_equities = {"RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"}
-    by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq}
-    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"):
+    by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
+    for symbol in ("RELIANCE", "HDFCBANK"):
         row = by_symbol.get(symbol)
         if row and _instrument_key(row):
             targets.append((row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity"))
 
-    # Gold: nearest active MCX GOLD future.
-    gold_rows = [
-        x for x in _active_rows({"MCX_FO"}, {"FUT"})
-        if "GOLD" in (
-            str(x.get("underlying_symbol", "")).upper()
-            + " "
-            + str(x.get("name", "")).upper()
-            + " "
-            + str(x.get("trading_symbol", "")).upper()
-        )
+    active_mcxfut = _active_rows({"MCX_FO"}, {"FUT"})
+    commodity_specs = [
+        ("Gold", ("GOLD",)),
+        ("Silver", ("SILVER",)),
+        ("Crude Oil", ("CRUDE", "CRUDEOIL")),
     ]
-    gold = _find_nearest_future(gold_rows, lambda x: True)
-    if gold:
-        targets.append(("Gold", _instrument_key(gold), "commodity"))
+    for label, terms in commodity_specs:
+        rows = [
+            x for x in active_mcxfut
+            if any(term in (
+                str(x.get("underlying_symbol", "")).upper()
+                + " " + str(x.get("name", "")).upper()
+                + " " + str(x.get("trading_symbol", "")).upper()
+            ) for term in terms)
+        ]
+        item = _find_nearest_future(rows, lambda x: True)
+        if item:
+            targets.append((label, _instrument_key(item), "commodity"))
 
-    # USD/INR: nearest active USDINR currency future.
-    currency_rows = [
-        x for x in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
-        if "USDINR" in (
-            str(x.get("underlying_symbol", "")).upper()
-            + " "
-            + str(x.get("name", "")).upper()
-            + " "
-            + str(x.get("trading_symbol", "")).upper()
-        )
+    active_fx = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+    currency_specs = [
+        ("USD/INR", ("USDINR",)),
+        ("EUR/INR", ("EURINR",)),
+        ("GBP/INR", ("GBPINR",)),
+        ("JPY/INR", ("JPYINR",)),
     ]
-    usd = _find_nearest_future(currency_rows, lambda x: True)
-    if usd:
-        targets.append(("USD/INR", _instrument_key(usd), "currency"))
+    for label, terms in currency_specs:
+        rows = [
+            x for x in active_fx
+            if any(term in (
+                str(x.get("underlying_symbol", "")).upper()
+                + " " + str(x.get("name", "")).upper()
+                + " " + str(x.get("trading_symbol", "")).upper()
+            ) for term in terms)
+        ]
+        item = _find_nearest_future(rows, lambda x: True)
+        if item:
+            targets.append((label, _instrument_key(item), "currency"))
 
     quotes = _quotes([key for _, key, _ in targets if key])
     output = []
     for label, key, kind in targets:
-        if not key:
-            continue
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
@@ -612,9 +616,23 @@ def market_now():
             "value": round(ltp, 4 if kind in ("currency", "commodity") else 2),
             "today_change": round(change, 2) if change is not None else None,
             "kind": kind,
-            "unit": "/10g" if label == "Gold" else "/$" if label == "USD/INR" else None,
+            "unit": "/10g" if label == "Gold" else None,
             "freshness": "live",
             "instrument_key": key,
         })
 
-    return output[:9]
+    try:
+        for row in compare_bonds()[:3]:
+            output.append({
+                "label": row.get("name") or row.get("symbol") or "Listed Bond",
+                "value": row.get("price"),
+                "today_change": row.get("today_change"),
+                "kind": "bond",
+                "unit": None,
+                "freshness": "live",
+                "instrument_key": row.get("instrument_key"),
+            })
+    except Exception:
+        pass
+
+    return output
