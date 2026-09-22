@@ -251,6 +251,27 @@ def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]
     return out
 
 
+def _history_for_fno_underlyings(rows: list[dict], limit: int = 6) -> dict:
+    """Get historical performance for the underlying assets of the leading F&O contracts."""
+    unique = {}
+    for row in rows:
+        key = row.get("underlying_key")
+        if key and key not in unique:
+            unique[key] = {
+                "instrument_key": key,
+                "symbol": row.get("underlying"),
+                "name": row.get("underlying") or row.get("name") or key,
+                "volume": row.get("volume") or row.get("oi") or 0,
+            }
+    shortlisted = sorted(unique.values(), key=lambda x: x.get("volume") or 0, reverse=True)[:limit]
+    history = _history_for_rows(shortlisted, "stocks", limit)
+    return {
+        str(row.get("instrument_key")): row
+        for row in history
+        if row.get("instrument_key")
+    }
+
+
 def _category_metrics(rows: list[dict], default_vol: float) -> dict:
     valid = [x for x in rows if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))]
     result = {
@@ -380,10 +401,8 @@ def category_market_analysis() -> dict:
 
     # Historical requests are parallel and limited to the shortlist. Live
     # quotes already screened the complete universe.
-    fno_history = [x for x in fno if x.get("type") == "FUT"]
     history_jobs = {
         "stocks": (stocks, "stocks", 12),
-        "fno": (fno_history, "fno", 10),
         "bonds": (bonds, "bonds", 8),
         "mutual-funds": (funds, "mutual-funds", 12),
         "gold": (gold, "gold", 2),
@@ -396,7 +415,14 @@ def category_market_analysis() -> dict:
             pool.submit(_history_for_rows, rows, category, limit): category
             for category, (rows, _, limit) in history_jobs.items()
         }
-        for future in as_completed(futures):
+        fno_future = pool.submit(_history_for_fno_underlyings, fno, 6)
+        for future in as_completed([*futures.keys(), fno_future]):
+            if future is fno_future:
+                try:
+                    history_results["fno_underlyings"] = future.result()
+                except Exception:
+                    history_results["fno_underlyings"] = {}
+                continue
             category = futures[future]
             try:
                 history_results[category] = future.result()
@@ -415,8 +441,19 @@ def category_market_analysis() -> dict:
         return output
 
     stocks = merge(stocks, history_results.get("stocks", []))
-    fno_history_map = {str(x.get("instrument_key") or x.get("symbol") or x.get("name")): x for x in history_results.get("fno", [])}
-    fno = [dict(fno_history_map.get(str(x.get("instrument_key") or x.get("symbol") or x.get("name"))) or x) for x in fno]
+    fno_underlyings = history_results.get("fno_underlyings", {})
+    enriched_fno = []
+    for row in fno:
+        item = dict(row)
+        hist = fno_underlyings.get(str(row.get("underlying_key")))
+        if hist:
+            for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized", "max_drawdown"):
+                if hist.get(key) is not None:
+                    item[key] = hist.get(key)
+            item["history_source"] = "Underlying market history (Upstox)"
+            item["underlying_history_available"] = True
+        enriched_fno.append(item)
+    fno = enriched_fno
     bonds = merge(bonds, history_results.get("bonds", []))
     funds = merge(funds, history_results.get("mutual-funds", []))
     gold = merge(gold, history_results.get("gold", []))
@@ -437,13 +474,40 @@ def category_market_analysis() -> dict:
     })
 
     fund_metrics = _category_metrics(funds, 14.0)
+    fund_data_status = "upstox"
+    if not fund_metrics.get("available"):
+        try:
+            from amfi_data import category_metrics, update_amfi_metrics_fast
+            amfi_metrics = category_metrics()
+            if not amfi_metrics.get("available"):
+                update_amfi_metrics_fast()
+                amfi_metrics = category_metrics()
+            if amfi_metrics.get("available"):
+                fund_metrics.update({
+                    "available": True,
+                    "sample_size": amfi_metrics.get("sample_size", 0),
+                    "return_1y": amfi_metrics.get("return_1y"),
+                    "return_3y": amfi_metrics.get("return_3y"),
+                    "return_5y": amfi_metrics.get("return_5y"),
+                })
+                fund_data_status = "upstox+amfi-history"
+        except Exception:
+            pass
+
     bond_metrics = _category_metrics(bonds, 7.0)
     fno_metrics = _category_metrics(fno, 45.0)
+    if fno_metrics.get("available"):
+        fno_data_status = "upstox-underlying-history"
+    else:
+        fno_data_status = "upstox"
     bond_data_status = "upstox"
     if not bond_metrics.get("available"):
         try:
-            from amfi_data import bond_proxy_metrics
+            from amfi_data import bond_proxy_metrics, update_bond_proxy_metrics_fast
             proxy = bond_proxy_metrics()
+            if not proxy.get("available"):
+                update_bond_proxy_metrics_fast()
+                proxy = bond_proxy_metrics()
             if proxy.get("available"):
                 for key in ("return_1y", "return_3y", "return_5y"):
                     if proxy.get(key) is not None:
@@ -516,7 +580,7 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "mutual-funds": {
-            "status": "fallback" if "mutual-funds" in snapshot.get("_fallback", {}) else "upstox",
+            "status": "fallback" if "mutual-funds" in snapshot.get("_fallback", {}) else fund_data_status,
             "source": snapshot.get("_fallback", {}).get("mutual-funds") or "Upstox mutual-fund instrument master; historical fallback only where needed",
             "metrics": fund_metrics,
             "analyzed_options": funds,
