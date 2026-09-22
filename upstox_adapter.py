@@ -394,6 +394,19 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     # Calculate segment averages across the complete tracked universe.
     from market_universe import history_universe
     hu = history_universe()
+
+    # One database read for all cached mutual-fund histories; workers reuse it.
+    mf_cache = {}
+    try:
+        from database import mutual_fund_metrics
+        for row in mutual_fund_metrics():
+            if not any(row.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
+                continue
+            mf_cache[str(row.get("scheme_code", "")).strip()] = row
+            mf_cache[str(row.get("scheme_name", "")).strip().lower()] = row
+    except Exception:
+        pass
+
     history_jobs = {
         "stocks": (hu.get("stocks", [])[:100], "stocks", None),
         "bonds": (hu.get("bonds", [])[:50], "bonds", None),
@@ -711,7 +724,7 @@ def market_highlights() -> list[dict]:
     return [live[x] for x in wanted if x in live][:9]
 
 def market_snapshot() -> dict:
-    analysis = category_market_analysis()
+    analysis = category_market_analysis(allow_stale=True)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "upstox-primary",
