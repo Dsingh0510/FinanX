@@ -2,6 +2,101 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from allocation_engine import RISK_PROFILES
+
+# Score model constants. Keep these named so changes to the scoring model are
+# deliberate and easy to audit.
+RISK_FIT_WEIGHT = 0.42
+HORIZON_FIT_WEIGHT = 0.24
+LIQUIDITY_FIT_WEIGHT = 0.14
+GOAL_FIT_WEIGHT = 0.20
+HISTORICAL_BASE_SCORE = 50.0
+HISTORICAL_RETURN_MULTIPLIER = 2.0
+VOLATILITY_PENALTY_DIVISOR = 3.0
+DRAWDOWN_PENALTY_DIVISOR = 4.0
+MAX_VOLATILITY_PENALTY = 18.0
+MAX_DRAWDOWN_PENALTY = 18.0
+WEIGHT_SCORE_FLOOR = 45.0
+WEIGHT_SCORE_EXPONENT = 1.25
+
+# One source of truth for the category ceilings. Both category scoring and the
+# final recommendation layer use this table.
+RISK_CAPS = {
+    'low': {
+        'fd': 0.60, 'bonds': 0.40, 'mutual-funds': 0.25, 'gold': 0.18,
+        'stocks': 0.10, 'commodities': 0.00, 'currency': 0.00, 'fno': 0.00,
+    },
+    'moderate': {
+        'fd': 0.50, 'bonds': 0.35, 'mutual-funds': 0.40, 'gold': 0.20,
+        'stocks': 0.25, 'commodities': 0.10, 'currency': 0.02, 'fno': 0.00,
+    },
+    'high': {
+        'fd': 0.35, 'bonds': 0.30, 'mutual-funds': 0.45, 'gold': 0.22,
+        'stocks': 0.45, 'commodities': 0.15, 'currency': 0.05, 'fno': 0.02,
+    },
+}
+
+
+def apply_risk_caps(weights: Dict[str, float], risk: str) -> Dict[str, float]:
+    """Apply category caps to a probability vector until all caps are met.
+
+    Weight removed from an excluded/capped category is redistributed only to
+    categories that still have spare capacity. The redistribution is repeated
+    to a fixed point, so a later cap can never push an earlier cap back over its
+    ceiling.
+    """
+    caps = RISK_CAPS[risk]
+    w = {k: max(float(v), 0.0) for k, v in weights.items() if float(v) > 0.0}
+    if not w:
+        return {}
+
+    excluded = [k for k in list(w) if caps.get(k, 1.0) <= 0.0]
+    removed = sum(w.pop(k) for k in excluded)
+    if removed > 0:
+        eligible = [k for k in w if caps.get(k, 1.0) > w[k] + 1e-12]
+        room = sum(max(caps.get(k, 1.0) - w[k], 0.0) for k in eligible)
+        if room > 0:
+            for k in eligible:
+                w[k] += removed * max(caps.get(k, 1.0) - w[k], 0.0) / room
+        else:
+            return {}
+
+    for _ in range(len(caps) * 4 + 4):
+        changed = False
+        for k in list(w):
+            cap = caps.get(k, 1.0)
+            if w[k] <= cap + 1e-10:
+                continue
+
+            excess = w[k] - cap
+            w[k] = cap
+            eligible = [
+                x for x in w
+                if x != k and w[x] < caps.get(x, 1.0) - 1e-10
+            ]
+            room = sum(max(caps.get(x, 1.0) - w[x], 0.0) for x in eligible)
+            if room > 0:
+                for x in eligible:
+                    spare = max(caps.get(x, 1.0) - w[x], 0.0)
+                    w[x] += excess * spare / room
+            else:
+                # The configured ceilings have enough total capacity for a
+                # normalized portfolio; reaching this branch means the input
+                # vector is malformed rather than merely over a cap.
+                return {}
+            changed = True
+
+        if not changed:
+            break
+
+    # Final guard: never return a portfolio that violates any configured cap.
+    if any(w.get(k, 0.0) > cap + 1e-8 for k, cap in caps.items()):
+        return {}
+
+    total = sum(w.values())
+    return {k: v / total for k, v in w.items()} if total > 0 else {}
+
+
 CATEGORY_RISK = {
     'fd': 1,
     'bonds': 1.5,
@@ -81,17 +176,24 @@ def _historical_score(metrics: Optional[Dict], horizon: int) -> Optional[float]:
     dd=metrics.get('max_drawdown')
     risk_adjust=0
     if vol is not None:
-        risk_adjust -= min(float(vol)/3, 18)
+        risk_adjust -= min(float(vol) / VOLATILITY_PENALTY_DIVISOR, MAX_VOLATILITY_PENALTY)
     if dd is not None:
-        risk_adjust -= min(abs(float(dd))/4, 18)
-    return round(_clip(50 + blended*2 + risk_adjust),1)
+        risk_adjust -= min(abs(float(dd)) / DRAWDOWN_PENALTY_DIVISOR, MAX_DRAWDOWN_PENALTY)
+    return round(_clip(
+        HISTORICAL_BASE_SCORE + blended * HISTORICAL_RETURN_MULTIPLIER + risk_adjust
+    ), 1)
 
 
 def score_categories(user: Dict, market_segments: Dict[str, Dict]) -> List[Dict]:
     risk=str(user.get('risk','moderate')).lower(); horizon=int(user.get('horizon',5)); liquidity=str(user.get('liquidity','medium')).lower(); goal=str(user.get('goal','balanced_growth')).lower()
     rows=[]
     for cat in CATEGORY_RISK:
-        base=0.42*_risk_fit(cat,risk)+0.24*_horizon_fit(cat,horizon)+0.14*_liquidity_fit(cat,liquidity)+0.20*_goal_fit(cat,goal)
+        base=(
+            RISK_FIT_WEIGHT * _risk_fit(cat, risk)
+            + HORIZON_FIT_WEIGHT * _horizon_fit(cat, horizon)
+            + LIQUIDITY_FIT_WEIGHT * _liquidity_fit(cat, liquidity)
+            + GOAL_FIT_WEIGHT * _goal_fit(cat, goal)
+        )
         metrics=market_segments.get(cat,{}).get('metrics') or {}
         hist=_historical_score(metrics,horizon)
         live_signal=metrics.get('live_breadth_score')
@@ -101,30 +203,35 @@ def score_categories(user: Dict, market_segments: Dict[str, Dict]) -> List[Dict]
             score = 0.70*base + 0.30*hist
         else:
             score = 0.60*base + 0.30*hist + 0.10*float(live_signal)
-        cap=None
-        if cat=='fno': cap=0 if risk!='high' else 0.02
-        elif cat=='currency' and risk=='low': cap=0
-        elif cat=='commodities' and risk=='low': cap=0
-        rows.append({'category':cat,'score':round(_clip(score),1),'user_fit':round(base,1),'market_score':hist,'cap_percent':cap,'metrics':metrics,'data_status':market_segments.get(cat,{}).get('status','not_configured')})
+        cap = RISK_CAPS[risk].get(cat)
+        rows.append({
+            'category': cat,
+            'score': round(_clip(score), 1),
+            'user_fit': round(base, 1),
+            'market_score': hist,
+            'cap_percent': cap,
+            'metrics': metrics,
+            'data_status': market_segments.get(cat, {}).get('status', 'not_configured'),
+        })
     rows.sort(key=lambda x:x['score'],reverse=True)
     return rows
 
 
-def build_dynamic_weights(scores: List[Dict], risk: str) -> Dict[str,float]:
-    allowed=[x for x in scores if x['cap_percent']!=0]
-    raw={}
-    for row in allowed:
-        raw[row['category']]=max(row['score']-45,0.0)**1.25
-    total=sum(raw.values())
-    if total<=0:return {}
-    weights={k:v/total for k,v in raw.items()}
-    caps={'fno':0.02 if risk=='high' else 0.0,'currency':0.05 if risk=='high' else 0.02,'commodities':0.10 if risk in {'moderate','high'} else 0.0}
-    for cat,cap in caps.items():
-        if cat in weights and cap==0:
-            del weights[cat]
-        elif cat in weights and weights[cat]>cap:
-            excess=weights[cat]-cap; weights[cat]=cap
-            rest=[k for k in weights if k!=cat]; rsum=sum(weights[k] for k in rest)
-            for k in rest: weights[k]+=excess*(weights[k]/rsum if rsum else 1/len(rest))
-    total=sum(weights.values())
-    return {k:v/total for k,v in weights.items()}
+def build_dynamic_weights(scores: List[Dict], risk: str) -> Dict[str, float]:
+    allowed = [row for row in scores if (row.get('cap_percent') or 0.0) > 0.0]
+    raw = {
+        row['category']: max(row['score'] - WEIGHT_SCORE_FLOOR, 0.0) ** WEIGHT_SCORE_EXPONENT
+        for row in allowed
+    }
+    total = sum(raw.values())
+
+    if total <= 0:
+        # Preserve the user's risk profile instead of returning no allocation.
+        return apply_risk_caps(dict(RISK_PROFILES[risk]), risk)
+
+    weights = {k: v / total for k, v in raw.items()}
+    capped = apply_risk_caps(weights, risk)
+
+    # This should only be reached for malformed inputs; keep a safe profile
+    # rather than returning an empty portfolio.
+    return capped or apply_risk_caps(dict(RISK_PROFILES[risk]), risk)

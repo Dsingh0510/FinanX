@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Dict, List
 import math
 
-from allocation_engine import ASSET_INFO
-from analysis_engine import build_dynamic_weights, score_categories
+from allocation_engine import ASSET_INFO, RISK_PROFILES
+from analysis_engine import RISK_CAPS, apply_risk_caps, build_dynamic_weights, score_categories
 
 BASELINE_RETURN = {
     'fd': 6.5,
@@ -16,6 +16,12 @@ BASELINE_RETURN = {
     'currency': 3.0,
     'fno': 0.0,
 }
+# Entity-level risk sensitivity and portfolio-scenario risk sensitivity are
+# intentionally distinct: the former ranks individual entities, while the
+# latter compares complete portfolio scenarios.
+ENTITY_RISK_PENALTY = {'low': 1.45, 'moderate': 0.90, 'high': 0.55}
+PORTFOLIO_RISK_PENALTY = {'low': 1.20, 'moderate': 0.85, 'high': 0.45}
+
 BASELINE_VOL = {
     'fd': 1.0,
     'bonds': 5.0,
@@ -165,7 +171,7 @@ def _entity_score(category: str, row: Dict, user_risk: str, horizon: int, goal: 
 
     vol = p['volatility_estimate']
 
-    risk_penalty = {'low': 1.45, 'moderate': 0.90, 'high': 0.55}.get(user_risk, 0.90)
+    risk_penalty = ENTITY_RISK_PENALTY.get(user_risk, ENTITY_RISK_PENALTY['moderate'])
     horizon_bonus = 0.0
     if horizon >= 7 and category in {'mutual-funds', 'stocks'}:
         horizon_bonus = 0.45
@@ -381,7 +387,11 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
     annual = total_return_numerator
     return {
         'annual_return_estimate': round(annual, 2),
+        # Correlations are not available from the current tracked-history feed,
+        # so this is a conservative weighted-volatility upper-bound proxy, not a
+        # correlation-aware portfolio standard deviation.
         'portfolio_volatility_estimate': round(total_vol_numerator, 2),
+        'portfolio_volatility_method': 'weighted volatility upper-bound proxy; correlations unavailable',
         'projected_value': round(projected_total, 2),
         'projected_gain': round(projected_gain, 2),
         'projected_3y_value': round(sum(
@@ -404,30 +414,9 @@ def _renorm(w):
 
 
 def _fit_to_risk_caps(weights, risk):
-    caps = {
-        'low': {'fd': 0.60, 'bonds': 0.40, 'mutual-funds': 0.25, 'gold': 0.18, 'stocks': 0.10, 'commodities': 0.00, 'currency': 0.00, 'fno': 0.00},
-        'moderate': {'fd': 0.50, 'bonds': 0.35, 'mutual-funds': 0.40, 'gold': 0.20, 'stocks': 0.25, 'commodities': 0.08, 'currency': 0.03, 'fno': 0.00},
-        'high': {'fd': 0.35, 'bonds': 0.30, 'mutual-funds': 0.45, 'gold': 0.22, 'stocks': 0.45, 'commodities': 0.15, 'currency': 0.07, 'fno': 0.03},
-    }[risk]
-    w = {k: max(float(v), 0.0) for k, v in weights.items() if float(v) > 0}
-    for k, cap in caps.items():
-        if cap <= 0:
-            w.pop(k, None)
-    changed = True
-    while changed:
-        changed = False
-        for k, cap in caps.items():
-            if k in w and w[k] > cap + 1e-9:
-                excess = w[k] - cap
-                w[k] = cap
-                room = sum(max(caps.get(x, 1.0) - w[x], 0) for x in w if x != k)
-                if room > 0:
-                    for x in list(w):
-                        if x == k:
-                            continue
-                        add = excess * max(caps.get(x, 1.0) - w[x], 0) / room
-                        w[x] += add
-    return _renorm(w)
+    # Keep final portfolio caps synchronized with analysis_engine.
+    capped = apply_risk_caps(weights, risk)
+    return _renorm(capped) if capped else apply_risk_caps(dict(RISK_PROFILES[risk]), risk)
 
 
 def _shift_mix(base, risk, direction):
@@ -457,7 +446,7 @@ def _shift_mix(base, risk, direction):
 def _candidate_plans(scores, risk, horizon):
     base = build_dynamic_weights(scores, risk)
     if not base:
-        base = {'fd': 0.35, 'bonds': 0.20, 'mutual-funds': 0.25, 'gold': 0.10, 'stocks': 0.10}
+        base = dict(RISK_PROFILES[risk])
     base = _fit_to_risk_caps(base, risk)
     return [
         ('Option 1', _shift_mix(base, risk, 'stable'), 'More weight to lower-volatility categories while staying within your selected risk level.'),
@@ -472,7 +461,7 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
     candidates = _candidate_plans(scores, risk, horizon)
 
     evaluated = []
-    risk_penalty = {'low': 1.20, 'moderate': 0.85, 'high': 0.45}.get(risk, 0.85)
+    risk_penalty = PORTFOLIO_RISK_PENALTY.get(risk, PORTFOLIO_RISK_PENALTY['moderate'])
     for name, weights, description in candidates:
         projection = _portfolio_projection(amount, weights, market_analysis, horizon, risk=risk, horizon=horizon, goal=goal)
         utility = projection['annual_return_estimate'] - risk_penalty * (projection['portfolio_volatility_estimate'] / 10)
@@ -607,6 +596,7 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
         'notes': [
             'The allocation is data-driven across the configured tracked universe, not a fixed percentage-only template.',
             'Historical returns are used at entity level where available; quote-only entities use a category planning rate plus live risk proxies.',
+            'Portfolio volatility is a conservative weighted-volatility proxy because tracked cross-asset correlations are not currently available.',',
             'Projected values are illustrative scenarios. Actual returns, prices, rates, taxes and liquidity can differ materially.',
             'F&O remains tightly limited because derivatives can magnify losses and are not treated as a normal core diversification bucket.',
         ],
