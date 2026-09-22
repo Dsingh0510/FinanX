@@ -194,6 +194,7 @@ async function createPlan(e){
  e.preventDefault();
  setAnalysisLoading(true);
  const payload={amount:document.getElementById('amount').value,horizon:document.getElementById('horizon').value,risk:document.getElementById('risk').value,liquidity:document.getElementById('liquidity').value,goal:document.getElementById('goal').value,emergency:document.getElementById('emergency').value};
+ document.getElementById('plan-panel').scrollIntoView({behavior:'smooth',block:'center'});
  try{
  const res=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
  const data=await res.json(); if(!res.ok){alert(data.error||'Could not create plan');return;}
@@ -244,7 +245,7 @@ async function createPlan(e){
      document.getElementById('plan-explanation').textContent=analysis.explanation;
    } else {
      document.getElementById('analysis-explanation').textContent=analysis.error||'Market analysis is unavailable.';
-   document.getElementById('allocation-list').innerHTML='<div class="analysis-loading">No data-driven allocation was produced.</div>';
+   document.getElementById('allocation-list').innerHTML='';
    }
  }catch(err){
    document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
