@@ -277,10 +277,10 @@ def tracking():
             'gold': ('gold', 5, 'Upstox MCX gold contracts'),
         }
         configs = {
-            'stocks': ('stocks', 100, 'Live equity market quotes'),
-            'fno': ('fno', 100, 'Live derivatives market quotes'),
-            'mutual-funds': ('mutual-funds', 100, 'Upstox mutual-fund scheme master'),
-            'bonds': ('bonds', 50, 'Listed bond/debt market quotes'),
+            'stocks': ('stocks', 30, 'Top tracked equity market quotes'),
+            'fno': ('fno', 30, 'Top tracked derivatives market quotes'),
+            'mutual-funds': ('mutual-funds', 30, 'Tracked mutual-fund scheme master'),
+            'bonds': ('bonds', 20, 'Tracked listed bond/debt market quotes'),
             'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
             **live_segments,
         }
