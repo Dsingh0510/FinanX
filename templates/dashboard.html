@@ -41,7 +41,7 @@
           <div class="hero-market-row"><span>Gold<small>Loading…</small></span><b>LIVE</b></div>
           <div class="hero-market-row"><span>USD/INR<small>Loading…</small></span><b>LIVE</b></div>
         </div>
-        <div class="tiny-note">Market movement is shown as a signal; it does not guarantee future returns.</div>
+        <div class="tiny-note">Market movement is shown as a signal; exchange-live values are used where available, with public intraday values as fallback.</div>
       </div>
    </section>
 
@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>Live market values across indices, commodities, currencies, bonds and selected equities.</p>
+          <p>Live exchange values where available, with an intraday public-market fallback when the exchange quote is unavailable.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -267,7 +267,7 @@ function renderMarketHighlights(items){
     const value=item.value==null?'—':(isYield?Number(item.value).toFixed(2)+'%':isFd?Number(item.value).toFixed(2)+'%':prefix+Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})+suffix);
     const today=item.today_change==null?'':('<span class="'+(item.today_change>=0?'positive':'negative')+'">'+(item.today_change>=0?'+':'')+Number(item.today_change).toFixed(2)+'% today</span>');
     const date=item.date?'<span class="market-date">'+escapeHtml(String(item.date))+'</span>':'';
-    const freshness=item.freshness==='live'?'LIVE':isMf?'Daily NAV':isFd?'Rate reference':'Latest available';
+    const freshness=item.freshness==='live'?'LIVE':item.freshness==='public_intraday'?'Public intraday':isMf?'Daily NAV':isFd?'Rate reference':item.freshness==='unavailable'?'Unavailable':'Latest available';
     return '<article class="market-now-card">'+
       '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':isGold?'COMMODITY':isCurrency?'CURRENCY':'MARKET')+'</span>'+today+'</div>'+
       '<h3>'+escapeHtml(item.label)+'</h3>'+
