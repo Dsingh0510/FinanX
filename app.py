@@ -161,11 +161,10 @@ def tracking():
     """Expose the backend tracking universe and live quote coverage."""
     try:
         import os as _os
-        from market_universe import tracking_universe, compare_stocks, compare_fno, compare_bonds, compare_fds
-        from amfi_data import tracking_fund_universe
+        from market_universe import tracking_universe, compare_stocks, compare_fno, compare_bonds, compare_fds, compare_mutual_funds
 
         catalog = tracking_universe()
-        fund_names = tracking_fund_universe(100)
+        fund_names = [x.get('name') for x in compare_mutual_funds(100) if x.get('name')]
         fd_rows = compare_fds()
         try:
             import upstox_adapter as _market_adapter
@@ -191,11 +190,16 @@ def tracking():
                 if rows: catalog['bonds'] = [x.get('symbol') or x.get('name') for x in rows]
             except Exception:
                 pass
+            try:
+                rows = compare_mutual_funds(100)
+                if rows: catalog['mutual-funds'] = [x.get('name') for x in rows if x.get('name')]
+            except Exception:
+                pass
 
         configs = {
             'stocks': ('stocks', 100, 'Live equity market quotes'),
             'fno': ('fno', 100, 'Live derivatives market quotes'),
-            'mutual-funds': ('mutual-funds', 100, 'Daily mutual-fund NAV/history'),
+            'mutual-funds': ('mutual-funds', 100, 'Upstox mutual-fund scheme master'),
             'bonds': ('bonds', 50, 'Listed bond/debt market quotes'),
             'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
         }
@@ -213,7 +217,7 @@ def tracking():
                 'target': target,
                 'source': source,
                 'names': names[:target] if target else names,
-                'mode': 'live' if live and slug in {'stocks','fno','bonds'} else 'configured',
+                'mode': 'live' if live and slug in {'stocks','fno','bonds','mutual-funds'} else 'configured',
             }
 
         category=request.args.get('category','').strip()
