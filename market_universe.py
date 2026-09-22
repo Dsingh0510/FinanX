@@ -199,22 +199,44 @@ def _quotes(keys):
     # separately so future requests with overlapping universes reuse them.
     stamp = datetime.now(timezone.utc).timestamp()
     for returned_key, value in (data or {}).items():
-        if isinstance(value, dict):
-            out[returned_key] = value
-            normalized = str(returned_key).replace(":", "|")
-            _QUOTE_ITEM_CACHE[normalized] = (stamp, value)
+        if not isinstance(value, dict):
+            continue
 
-            for requested in misses:
-                variants = {
-                    requested,
-                    requested.replace("|", ":"),
-                    requested.replace(":", "|"),
-                    requested.replace("NSE_INDEX|", "NSE_INDEX:"),
-                }
-                if returned_key in variants or normalized in variants:
-                    _QUOTE_ITEM_CACHE[requested] = (stamp, value)
-                    out[requested] = value
-                    break
+        out[returned_key] = value
+
+        # Upstox Full Market Quotes V3 keys the response by
+        # "<EXCHANGE>:<TRADING_SYMBOL>", while the request normally uses
+        # "<EXCHANGE>|<INSTRUMENT_TOKEN>". The response also includes
+        # data.instrument_token, which is the reliable way to map the quote
+        # back to the requested instrument key.
+        response_aliases = {
+            str(returned_key),
+            str(returned_key).replace(":", "|"),
+        }
+        instrument_token = (
+            value.get("instrument_token")
+            or value.get("instrument_key")
+            or value.get("instrumentToken")
+        )
+        if instrument_token:
+            response_aliases.add(str(instrument_token))
+            response_aliases.add(str(instrument_token).replace(":", "|"))
+            response_aliases.add(str(instrument_token).replace("|", ":"))
+
+        for alias in response_aliases:
+            _QUOTE_ITEM_CACHE[alias] = (stamp, value)
+
+        for requested in misses:
+            requested_aliases = {
+                str(requested),
+                str(requested).replace("|", ":"),
+                str(requested).replace(":", "|"),
+                str(requested).replace("NSE_INDEX|", "NSE_INDEX:"),
+            }
+            if response_aliases.intersection(requested_aliases):
+                _QUOTE_ITEM_CACHE[requested] = (stamp, value)
+                out[requested] = value
+                break
 
     return out
 
@@ -236,19 +258,52 @@ def _lookup_quote(quotes, key):
 
 
 def _ltp_quotes(keys):
-    """Fetch a batched LTP fallback for instruments missing from full quotes."""
+    """Fetch a batched LTP fallback and map response keys back to requested keys."""
     keys = list(dict.fromkeys([key for key in keys if key]))
     if not keys:
         return {}
+
     try:
         payload = _get(
             f"{BASE}/market-quote/ltp",
             {"instrument_key": ",".join(keys)},
             timeout=10,
         )
-        return payload.get("data") or {}
+        data = payload.get("data") or {}
     except Exception:
         return {}
+
+    output = {}
+    for returned_key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+
+        aliases = {
+            str(returned_key),
+            str(returned_key).replace(":", "|"),
+        }
+        instrument_token = (
+            value.get("instrument_token")
+            or value.get("instrument_key")
+            or value.get("instrumentToken")
+        )
+        if instrument_token:
+            aliases.add(str(instrument_token))
+            aliases.add(str(instrument_token).replace(":", "|"))
+            aliases.add(str(instrument_token).replace("|", ":"))
+
+        for requested in keys:
+            requested_aliases = {
+                str(requested),
+                str(requested).replace("|", ":"),
+                str(requested).replace(":", "|"),
+                str(requested).replace("NSE_INDEX|", "NSE_INDEX:"),
+            }
+            if aliases.intersection(requested_aliases):
+                output[requested] = value
+                break
+
+    return output
 
 
 _SINGLE_QUOTE_TTL = 15
@@ -964,14 +1019,27 @@ def market_now():
         if not output_by_key.get(key)
     ]
     if missing_quote_keys:
-        try:
-            ltp_quotes = _ltp_quotes(missing_quote_keys)
-            for key in missing_quote_keys:
-                row = _lookup_quote(ltp_quotes, key)
+        ltp_quotes = _ltp_quotes(missing_quote_keys)
+        for key in missing_quote_keys:
+            row = _lookup_quote(ltp_quotes, key)
+            if row:
+                output_by_key[key] = row
+
+    # Final per-instrument fallback for any quote that is still unresolved.
+    # This keeps one bad global/derivative instrument from blanking the rest
+    # of the Market Now board.
+    unresolved = [key for key in all_keys if not output_by_key.get(key)]
+    if unresolved:
+        with ThreadPoolExecutor(max_workers=min(8, len(unresolved))) as pool:
+            futures = {pool.submit(_quote_one, key): key for key in unresolved}
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    row = future.result()
+                except Exception:
+                    row = {}
                 if row:
                     output_by_key[key] = row
-        except Exception:
-            pass
 
     output=[]
     for label,key,kind,unit in targets:
