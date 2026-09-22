@@ -47,9 +47,9 @@ def cached_market_analysis() -> dict | None:
 
 
 def clear_runtime_caches() -> None:
-    """Clear in-process analysis, snapshot, history, and Market Now caches."""
+    """Clear in-process analysis, snapshot, history, Market Now and health caches."""
     global _SNAPSHOT, _SNAPSHOT_AT, _ANALYSIS, _ANALYSIS_AT
-    global _MARKET_HIGHLIGHTS, _MARKET_HIGHLIGHTS_AT
+    global _MARKET_HIGHLIGHTS, _MARKET_HIGHLIGHTS_AT, _HEALTHCHECK_CACHE, _HEALTHCHECK_AT
     _CACHE.clear()
     _SNAPSHOT = None
     _SNAPSHOT_AT = 0.0
@@ -57,6 +57,8 @@ def clear_runtime_caches() -> None:
     _ANALYSIS_AT = 0.0
     _MARKET_HIGHLIGHTS = []
     _MARKET_HIGHLIGHTS_AT = 0.0
+    _HEALTHCHECK_CACHE = None
+    _HEALTHCHECK_AT = 0.0
     try:
         from market_universe import clear_runtime_caches as clear_universe_caches
         clear_universe_caches()
@@ -146,15 +148,17 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     except (TypeError, ValueError, ZeroDivisionError):
         r1 = r3 = r5 = None
 
-    weekly = [
+    monthly_returns = [
         math.log(curr / prev)
         for (_, prev), (_, curr) in zip(rows[:-1], rows[1:])
         if prev > 0 and curr > 0
     ]
-    if weekly:
-        mean = sum(weekly) / len(weekly)
-        variance = sum((x - mean) ** 2 for x in weekly) / len(weekly)
-        out["volatility_annualized"] = round(math.sqrt(variance) * math.sqrt(52) * 100, 2)
+    if monthly_returns:
+        mean = sum(monthly_returns) / len(monthly_returns)
+        variance = sum((x - mean) ** 2 for x in monthly_returns) / len(monthly_returns)
+        # _series(..., unit="months") returns monthly candles, so annualize
+        # monthly return volatility with sqrt(12).
+        out["volatility_annualized"] = round(math.sqrt(variance) * math.sqrt(12) * 100, 2)
 
     peak = rows[0][1]
     drawdown = 0.0
@@ -275,9 +279,6 @@ def _load_live_universe() -> dict:
                 snapshot[key] = future.result()
             except Exception:
                 snapshot[key] = []
-
-    # Upstox is the only market-data provider used by the application.
-    snapshot["_fallback"] = {}
 
     _SNAPSHOT = snapshot
     _SNAPSHOT_AT = now
@@ -425,8 +426,8 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "updated_at": now,
         },
         "bonds": {
-            "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else bond_data_status,
-            "source": snapshot.get("_fallback", {}).get("bonds") or "Upstox listed bond/debt quotes",
+            "status": bond_data_status,
+            "source": "Upstox listed bond/debt quotes",
             "metrics": bond_metrics,
             "analyzed_options": bonds,
             "updated_at": now,
@@ -439,29 +440,29 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "updated_at": now,
         },
         "gold": {
-            "status": gold_data_status if "gold" not in snapshot.get("_fallback", {}) else "fallback",
-            "source": snapshot.get("_fallback", {}).get("gold") or "Upstox MCX gold contracts",
+            "status": gold_data_status,
+            "source": "Upstox MCX gold contracts",
             "metrics": gold_metrics,
             "analyzed_options": gold,
             "updated_at": now,
         },
         "commodities": {
-            "status": commodity_data_status if "commodities" not in snapshot.get("_fallback", {}) else "fallback",
-            "source": snapshot.get("_fallback", {}).get("commodities") or "Upstox MCX commodity contracts",
+            "status": commodity_data_status,
+            "source": "Upstox MCX commodity contracts",
             "metrics": commodity_metrics,
             "analyzed_options": commodities,
             "updated_at": now,
         },
         "currency": {
-            "status": currency_data_status if "currency" not in snapshot.get("_fallback", {}) else "fallback",
-            "source": snapshot.get("_fallback", {}).get("currency") or "Upstox currency futures",
+            "status": currency_data_status,
+            "source": "Upstox currency futures",
             "metrics": currency_metrics,
             "analyzed_options": currency,
             "updated_at": now,
         },
         "fno": {
-            "status": "fallback" if "fno" in snapshot.get("_fallback", {}) else "upstox",
-            "source": snapshot.get("_fallback", {}).get("fno") or "Upstox F&O market quotes + historical futures/options candles",
+            "status": fno_data_status,
+            "source": "Upstox F&O market quotes + historical futures/options candles",
             "metrics": {
                 **fno_metrics,
                 "live_sample_size": len(fno),
@@ -471,8 +472,8 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "updated_at": now,
         },
         "stocks": {
-            "status": stock_data_status if "stocks" not in snapshot.get("_fallback", {}) else "fallback",
-            "source": snapshot.get("_fallback", {}).get("stocks") or "Upstox full market quotes + historical candles",
+            "status": stock_data_status,
+            "source": "Upstox full market quotes + historical candles",
             "metrics": stock_metrics,
             "analyzed_options": stocks,
             "updated_at": now,
@@ -523,6 +524,9 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
 _MARKET_HIGHLIGHTS = []
 _MARKET_HIGHLIGHTS_AT = 0.0
 _MARKET_HIGHLIGHTS_TTL = 45
+_HEALTHCHECK_TTL = 45
+_HEALTHCHECK_CACHE = None
+_HEALTHCHECK_AT = 0.0
 
 
 def _market_row(label, value, change, kind, unit=None, freshness="live", **extra):
@@ -575,21 +579,44 @@ def market_snapshot() -> dict:
 
 
 def healthcheck() -> dict:
+    """Return a short-lived cached Upstox reachability check."""
+    global _HEALTHCHECK_CACHE, _HEALTHCHECK_AT
+    now = datetime.now(timezone.utc).timestamp()
+
+    if _HEALTHCHECK_CACHE is not None and now - _HEALTHCHECK_AT < _HEALTHCHECK_TTL:
+        return _HEALTHCHECK_CACHE
+
     if not configured():
-        return {"configured": False, "reachable": False, "error": "UPSTOX_ANALYTICS_TOKEN is missing."}
+        _HEALTHCHECK_CACHE = {
+            "configured": False,
+            "reachable": False,
+            "error": "UPSTOX_ANALYTICS_TOKEN is missing.",
+        }
+        _HEALTHCHECK_AT = now
+        return _HEALTHCHECK_CACHE
+
     try:
         from market_universe import compare_stocks
         rows = compare_stocks()[:1]
-        return {
+        _HEALTHCHECK_CACHE = {
             "configured": True,
             "reachable": bool(rows),
             "sample": rows[0] if rows else None,
-            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO", "MCX_FO", "NCD_FO", "BCD_FO"],
+            "enabled_segments": [
+                "NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO",
+                "MCX_FO", "NCD_FO", "BCD_FO",
+            ],
         }
     except Exception as exc:
-        return {
+        _HEALTHCHECK_CACHE = {
             "configured": True,
             "reachable": False,
             "error": str(exc),
-            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO", "MCX_FO", "NCD_FO", "BCD_FO"],
+            "enabled_segments": [
+                "NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO",
+                "MCX_FO", "NCD_FO", "BCD_FO",
+            ],
         }
+
+    _HEALTHCHECK_AT = now
+    return _HEALTHCHECK_CACHE

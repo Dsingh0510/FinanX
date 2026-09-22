@@ -400,6 +400,8 @@ def asset(slug: str):
 
 @app.get('/api/health')
 def health():
+    """Cached liveness/readiness check for the configured Upstox connection."""
+
     try:
         upstox = _engine().healthcheck()
     except Exception as exc:
