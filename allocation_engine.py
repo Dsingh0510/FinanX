@@ -77,6 +77,9 @@ ASSET_INFO = [
     },
 ]
 
+# Canonical baseline targets used by the immediate /api/plan path.
+# analysis_engine.RISK_CAPS is separate: those values are category ceilings for
+# market-adjusted plans, not a second set of baseline targets.
 RISK_PROFILES = {
     'low': {'fd': 0.45, 'bonds': 0.25, 'mutual-funds': 0.15, 'gold': 0.10, 'stocks': 0.05, 'commodities': 0.00, 'currency': 0.00, 'fno': 0.00},
     'moderate': {'fd': 0.30, 'bonds': 0.18, 'mutual-funds': 0.27, 'gold': 0.10, 'stocks': 0.12, 'commodities': 0.03, 'currency': 0.00, 'fno': 0.00},
@@ -112,12 +115,17 @@ def build_portfolio(amount: float, horizon: int, risk: str, liquidity: str, goal
         weights['mutual-funds'] += shift * 0.65
         weights['stocks'] += shift * 0.35
 
+    # These adjustments are cumulative and order-sensitive: each block works
+    # from the weights produced by the previous block.
     if liquidity == 'high':
         shift = min(weights['stocks'] * 0.20 + weights['commodities'] * 0.15, 0.05)
-        weights['stocks'] -= min(weights['stocks'], shift * 0.65)
-        weights['commodities'] -= min(weights['commodities'], shift * 0.15)
-        weights['fd'] += shift * 0.80
-        weights['bonds'] += shift * 0.20
+        stock_take = min(weights['stocks'], shift * 0.65 / 0.80)
+        commodity_take = min(weights['commodities'], shift * 0.15 / 0.80)
+        moved = stock_take + commodity_take
+        weights['stocks'] -= stock_take
+        weights['commodities'] -= commodity_take
+        weights['fd'] += moved * 0.80
+        weights['bonds'] += moved * 0.20
     elif liquidity == 'low' and horizon >= 5 and risk != 'low':
         shift = min(weights['fd'] * 0.10, 0.03)
         weights['fd'] -= shift
@@ -125,11 +133,18 @@ def build_portfolio(amount: float, horizon: int, risk: str, liquidity: str, goal
         weights['stocks'] += shift * 0.40
 
     if emergency == 'yes':
-        # Keep a small learning-model liquidity buffer inside stable categories.
+        # Move a fixed amount out of growth buckets into FD. This preserves
+        # total portfolio weight instead of mixing absolute and multiplicative
+        # adjustments.
         shift = min(max(weights['fd'] * 0.10, 0.0), 0.05)
-        weights['fd'] += shift
-        weights['stocks'] *= (1 - shift)
-        weights['mutual-funds'] *= (1 - shift)
+        source_total = weights['stocks'] + weights['mutual-funds']
+        moved = min(shift, source_total)
+        if moved > 0 and source_total > 0:
+            stock_take = moved * weights['stocks'] / source_total
+            mf_take = moved * weights['mutual-funds'] / source_total
+            weights['stocks'] -= stock_take
+            weights['mutual-funds'] -= mf_take
+            weights['fd'] += moved
 
     # This MVP intentionally does not use individual securities or forecast guaranteed returns.
     weights = _normalize(weights)

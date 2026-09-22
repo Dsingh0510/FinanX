@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -37,7 +37,7 @@
         <div class="example-amount" id="hero-market-title">Market trends</div>
         <div class="mini-caption">A quick view before you build your plan</div>
         <div class="hero-market-list" id="hero-market-list">
-          <div class="hero-market-row"><span>NIFTY 50<small>Loading…</small></span><b>LIVE</b></div>
+          <div class="hero-market-row"><span>NIFTY 50<small>Loading…</small></span><b>—</b></div>
           <div class="hero-market-row"><span>Gold<small>Loading…</small></span><b>LIVE</b></div>
           <div class="hero-market-row"><span>USD/INR<small>Loading…</small></span><b>LIVE</b></div>
         </div>
@@ -69,12 +69,12 @@
       <div class="planner-grid">
         <div class="panel form-panel">
           <form id="planner-form">
-            <div class="field full"><label>How much do you want to plan for?</label><div class="amount-input"><span>₹</span><input id="amount" name="amount" type="number" min="1000" step="1000" placeholder="100000" required></div></div>
-            <div class="field"><label>Time horizon</label><select id="horizon"><option value="1">1 year</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="10">10 years</option><option value="15">15+ years</option></select></div>
-            <div class="field"><label>Risk comfort</label><select id="risk"><option value="low">Low — protect first</option><option value="moderate" selected>Moderate — balance growth & safety</option><option value="high">High — accept high volatility</option></select></div>
-            <div class="field"><label>Need easy access to money?</label><select id="liquidity"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></div>
-            <div class="field"><label>Emergency fund already kept aside?</label><select id="emergency"><option value="yes" selected>Yes</option><option value="no">No</option></select></div>
-            <div class="field full"><label>Primary goal</label><select id="goal"><option value="balanced_growth" selected>Balanced growth</option><option value="capital_preservation">Capital preservation</option><option value="wealth">Long-term wealth building</option><option value="education">Education / future goal</option></select></div>
+            <div class="field full"><label for="amount">How much do you want to plan for?</label><div class="amount-input"><span>₹</span><input id="amount" name="amount" type="number" min="1000" step="1000" placeholder="100000" required></div></div>
+            <div class="field"><label for="horizon">Time horizon</label><select id="horizon"><option value="1">1 year</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="10">10 years</option><option value="15">15+ years</option></select></div>
+            <div class="field"><label for="risk">Risk comfort</label><select id="risk"><option value="low">Low — protect first</option><option value="moderate" selected>Moderate — balance growth & safety</option><option value="high">High — accept high volatility</option></select></div>
+            <div class="field"><label for="liquidity">Need easy access to money?</label><select id="liquidity"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></div>
+            <div class="field"><label for="emergency">Emergency fund already kept aside?</label><select id="emergency"><option value="yes" selected>Yes</option><option value="no">No</option></select></div>
+            <div class="field full"><label for="goal">Primary goal</label><select id="goal"><option value="balanced_growth" selected>Balanced growth</option><option value="capital_preservation">Capital preservation</option><option value="wealth">Long-term wealth building</option><option value="education">Education / future goal</option></select></div>
             <button class="button primary full" type="submit">Create my FinanX plan <span>→</span></button>
             <p class="form-note">FinanX compares categories and scenarios. It does not guarantee returns or replace a SEBI-registered investment adviser.</p>
           </form>
@@ -187,8 +187,17 @@ function renderPlanResult(analysis){
   document.getElementById('proj-horizon-value').textContent=(analysis.projected_value!=null?'₹'+money.format(analysis.projected_value):'—');
   document.getElementById('allocation-list').innerHTML=`<div class="breakup-head"><span>Investment breakup</span><span>Value after horizon</span></div>` + analysis.allocations.map(a=>`<div class="alloc-row alloc-return-row"><div><strong>${escapeHtml(a.asset)}</strong><span>Invested ₹${money.format(a.amount)} • ${a.percent}% of portfolio</span></div><div class="alloc-return"><b>₹${money.format(a.projected_value)}</b><small>After ${analysis.horizon} years • est. gain ₹${money.format(a.projected_gain)}</small></div></div>`).join('');
   const selectedLabels=analysis.allocations.map(a=>a.asset), selectedVals=analysis.allocations.map(a=>a.percent);
-  if(allocationChart)allocationChart.destroy();
-  allocationChart=new Chart(document.getElementById('allocationChart'),{type:'doughnut',data:{labels:selectedLabels,datasets:[{data:selectedVals,backgroundColor:['#111827','#2563eb','#10b981','#f59e0b','#7c3aed','#ef4444','#0ea5e9','#94a3b8'],borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{boxWidth:12,usePointStyle:true,font:{family:'DM Sans'}}}},cutout:'68%'}});
+  if(allocationChart){
+    try{ allocationChart.destroy(); }catch(e){ console.warn('FinanX chart cleanup failed',e); }
+    allocationChart=null;
+  }
+  try{
+    if(typeof Chart==='function'){
+      allocationChart=new Chart(document.getElementById('allocationChart'),{type:'doughnut',data:{labels:selectedLabels,datasets:[{data:selectedVals,backgroundColor:['#111827','#2563eb','#10b981','#f59e0b','#7c3aed','#ef4444','#0ea5e9','#94a3b8'],borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{boxWidth:12,usePointStyle:true,font:{family:'DM Sans'}}}},cutout:'68%'}});
+    }
+  }catch(e){
+    console.warn('FinanX allocation chart unavailable; continuing without chart.',e);
+  }
   const rows=(analysis.ranked_categories||[]).slice(0,8);
   document.getElementById('ranked-list').innerHTML=`<div class="market-analysis-head"><span>Investment segment</span><span>YoY</span><span>3Y</span><span>5Y</span></div>` + rows.map(r=>{
     const fmt=v=>v==null?'—':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
@@ -201,8 +210,22 @@ function renderPlanResult(analysis){
   document.getElementById('plan-explanation').textContent=analysis.explanation||'';
 }
 
+let activePlanController=null;
+let planRequestSequence=0;
+
 async function createPlan(e){
  e.preventDefault();
+ const requestId=++planRequestSequence;
+ if(activePlanController) activePlanController.abort();
+ const controller=new AbortController();
+ activePlanController=controller;
+ const submitButton=e.submitter || document.querySelector('#planner-form button[type="submit"]');
+ const originalSubmitMarkup=submitButton?.innerHTML || '';
+ if(submitButton){
+   submitButton.disabled=true;
+   submitButton.innerHTML='Building your FinanX plan…';
+ }
+ const isCurrent=()=>requestId===planRequestSequence && !controller.signal.aborted;
  const payload={
    amount:document.getElementById('amount').value,
    horizon:document.getElementById('horizon').value,
@@ -234,10 +257,12 @@ async function createPlan(e){
      method:'POST',
      headers:{'Content-Type':'application/json'},
      body:JSON.stringify(payload),
-     cache:'no-store'
+     cache:'no-store',
+     signal:controller.signal
    });
    const basePlan=await baseResponse.json();
    if(!baseResponse.ok) throw new Error(basePlan.error||'Plan service unavailable');
+   if(!isCurrent()) return;
    basePlan.provisional=true;
    basePlan.annual_return_estimate=null;
    basePlan.projected_value=null;
@@ -252,30 +277,44 @@ async function createPlan(e){
 
    // Then ask for the fast Upstox-enriched plan. If market history is not ready,
    // the backend still returns the base plan rather than failing the UI.
-   fetch('/api/analyze/fast',{
+   const fastRequest=fetch('/api/analyze/fast',{
      method:'POST',
      headers:{'Content-Type':'application/json'},
      body:JSON.stringify(payload),
-     cache:'no-store'
+     cache:'no-store',
+     signal:controller.signal
    })
    .then(r=>r.json())
-   .then(fast=>{ if(fast && Array.isArray(fast.allocations)) renderPlanResult(fast); })
+   .then(fast=>{ if(isCurrent() && fast && Array.isArray(fast.allocations)) renderPlanResult(fast); })
    .catch(()=>{});
 
    // Full phase: calculate the tracked-universe average once and replace the
    // provisional plan when the complete Upstox analysis is ready.
-   fetch('/api/analyze',{
+   const fullRequest=fetch('/api/analyze',{
      method:'POST',
      headers:{'Content-Type':'application/json'},
      body:JSON.stringify(payload),
-     cache:'no-store'
+     cache:'no-store',
+     signal:controller.signal
    })
    .then(r=>r.json())
-   .then(full=>{ if(full && Array.isArray(full.allocations)) renderPlanResult(full); })
+   .then(full=>{ if(isCurrent() && full && Array.isArray(full.allocations)) renderPlanResult(full); })
    .catch(()=>{});
+
+   await Promise.allSettled([fastRequest,fullRequest]);
  }catch(err){
-   document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
-   document.getElementById('allocation-list').innerHTML='';
+   if(isCurrent() && err?.name!=='AbortError'){
+     document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
+     document.getElementById('allocation-list').innerHTML='';
+   }
+ }finally{
+   if(isCurrent()){
+     activePlanController=null;
+     if(submitButton){
+       submitButton.disabled=false;
+       submitButton.innerHTML=originalSubmitMarkup;
+     }
+   }
  }
 }
 
@@ -385,12 +424,10 @@ function renderHeroMarket(items){
 }
 
 renderLearn();
-refreshMarket();
+refreshMarket().then(ok=>{
+  if(!ok) setTimeout(refreshMarket,5000);
+});
 setInterval(refreshMarket,180000);
-// Re-check the market feed after startup without making the first page wait.
-setTimeout(refreshMarket,2500);
-setTimeout(refreshMarket,8000);
-setTimeout(refreshMarket,20000);
 </script>
 </body>
 </html>

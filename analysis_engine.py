@@ -19,8 +19,9 @@ MAX_DRAWDOWN_PENALTY = 18.0
 WEIGHT_SCORE_FLOOR = 45.0
 WEIGHT_SCORE_EXPONENT = 1.25
 
-# One source of truth for the category ceilings. Both category scoring and the
-# final recommendation layer use this table.
+# RISK_PROFILES in allocation_engine is the canonical baseline target table.
+# This separate table is the single source of truth for category ceilings used
+# by both category scoring and the final recommendation layer.
 RISK_CAPS = {
     'low': {
         'fd': 0.60, 'bonds': 0.40, 'mutual-funds': 0.25, 'gold': 0.18,
