@@ -30,7 +30,7 @@
           <a class="button primary" href="#planner">Build my plan</a>
           <a class="button ghost" href="#learn">Explore assets</a>
         </div>
-        <div class="trust-line"><span class="dot"></span> Market values refresh automatically; some public market quotes may be delayed.</div>
+        <div class="trust-line"><span class="dot"></span> Market values refresh automatically from Upstox.</div>
       </div>
       <div class="hero-card">
         <div class="mini-label">MARKET TODAY</div>
@@ -41,7 +41,7 @@
           <div class="hero-market-row"><span>Gold<small>Loading…</small></span><b>LIVE</b></div>
           <div class="hero-market-row"><span>USD/INR<small>Loading…</small></span><b>LIVE</b></div>
         </div>
-        <div class="tiny-note">Market movement is shown as a signal; exchange-live values are used where available, with public intraday values as fallback.</div>
+        <div class="tiny-note">Market movement is shown as a signal from the Upstox market feed.</div>
       </div>
    </section>
 
@@ -50,7 +50,7 @@
         <div>
           <div class="eyebrow">MARKET NOW</div>
           <h2>Selected market values at a glance.</h2>
-          <p>Live exchange values where available, with an intraday public-market fallback when the exchange quote is unavailable.</p>
+          <p>Live market values from the Upstox feed.</p>
         </div>
       </div>
       <div class="market-now-grid" id="market-now-grid"></div>
@@ -284,7 +284,7 @@ function renderMarketHighlights(items){
     const value=item.value==null?'—':(isYield?Number(item.value).toFixed(2)+'%':isFd?Number(item.value).toFixed(2)+'%':prefix+Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})+suffix);
     const today=item.today_change==null?'':('<span class="'+(item.today_change>=0?'positive':'negative')+'">'+(item.today_change>=0?'+':'')+Number(item.today_change).toFixed(2)+'% today</span>');
     const date=item.date?'<span class="market-date">'+escapeHtml(String(item.date))+'</span>':'';
-    const freshness=item.freshness==='live'?'LIVE':item.freshness==='public_intraday'?'Public intraday':isMf?'Daily NAV':isFd?'Rate reference':item.freshness==='unavailable'?'Unavailable':'Latest available';
+    const freshness=item.freshness==='live'?'LIVE':isMf?'Daily NAV':isFd?'Rate reference':item.freshness==='unavailable'?'Unavailable':'Latest available';
     return '<article class="market-now-card">'+
       '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':isGold?'COMMODITY':isCurrency?'CURRENCY':'MARKET')+'</span>'+today+'</div>'+
       '<h3>'+escapeHtml(item.label)+'</h3>'+
@@ -308,7 +308,7 @@ async function refreshMarket(){
     const hero=document.getElementById('hero-market-list');
     if(hero) hero.innerHTML='<div class="hero-market-row"><span>Market data</span><b>Temporarily unavailable</b></div>';
     const grid=document.getElementById('market-now-grid');
-    if(grid) grid.innerHTML='<div class="market-now-empty">Live feed unavailable — showing the latest public/reference cache.</div>';
+    if(grid) grid.innerHTML='<div class="market-now-empty">Upstox market feed is temporarily unavailable.</div>';
   }finally{
     clearTimeout(timer);
     window._finanxMarketBusy=false;
@@ -362,9 +362,7 @@ function renderHeroMarket(items){
   const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isMf?4:2,maximumFractionDigits:isMf?4:2})}${unit?` ${escapeHtml(unit)}`:''}`;
    const dTxt=t.freshness==='live'
      ? (d==null?'LIVE':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`)
-     : t.freshness==='public_intraday'
-       ? (d==null?'Public intraday':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`)
-       : (d==null?'Latest available':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`);
+     : (d==null?'Latest available':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`);
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
    return `<div class="hero-market-row"><span>${escapeHtml(label)}<small>${valueTxt}${rTxt}</small></span><b class="${cls}">${dTxt}</b></div>`;
@@ -374,8 +372,7 @@ function renderHeroMarket(items){
 renderLearn();
 refreshMarket();
 setInterval(refreshMarket,180000);
-// Re-check the local cache quickly after startup so background AMFI/commodity history
-// appears without making the first page wait.
+// Re-check the market feed after startup without making the first page wait.
 setTimeout(refreshMarket,2500);
 setTimeout(refreshMarket,8000);
 setTimeout(refreshMarket,20000);
