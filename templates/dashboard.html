@@ -177,6 +177,30 @@ document.getElementById('modal-close').onclick=()=>document.getElementById('info
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
 
 
+function renderPlanResult(analysis){
+  document.getElementById('plan-title').textContent=`Data-driven allocation · ₹${money.format(analysis.amount)}`;
+  document.getElementById('analysis-explanation').textContent=analysis.provisional
+    ? 'Showing a quick allocation while the full market history refreshes.'
+    : 'FinanX averages the available 1Y, 3Y and 5Y histories across the tracked entities in each segment, then combines those results with risk, liquidity, goal and horizon to calculate the allocation.';
+  document.getElementById('proj-invested').textContent='₹'+money.format(analysis.amount);
+  document.getElementById('proj-rate').textContent=(analysis.annual_return_estimate!=null?analysis.annual_return_estimate.toFixed(1)+'% / year':'—');
+  document.getElementById('proj-horizon-value').textContent=(analysis.projected_value!=null?'₹'+money.format(analysis.projected_value):'—');
+  document.getElementById('allocation-list').innerHTML=`<div class="breakup-head"><span>Investment breakup</span><span>Value after horizon</span></div>` + analysis.allocations.map(a=>`<div class="alloc-row alloc-return-row"><div><strong>${escapeHtml(a.asset)}</strong><span>Invested ₹${money.format(a.amount)} • ${a.percent}% of portfolio</span></div><div class="alloc-return"><b>₹${money.format(a.projected_value)}</b><small>After ${analysis.horizon} years • est. gain ₹${money.format(a.projected_gain)}</small></div></div>`).join('');
+  const selectedLabels=analysis.allocations.map(a=>a.asset), selectedVals=analysis.allocations.map(a=>a.percent);
+  if(allocationChart)allocationChart.destroy();
+  allocationChart=new Chart(document.getElementById('allocationChart'),{type:'doughnut',data:{labels:selectedLabels,datasets:[{data:selectedVals,backgroundColor:['#111827','#2563eb','#10b981','#f59e0b','#7c3aed','#ef4444','#0ea5e9','#94a3b8'],borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{boxWidth:12,usePointStyle:true,font:{family:'DM Sans'}}}},cutout:'68%'}});
+  const rows=(analysis.ranked_categories||[]).slice(0,8);
+  document.getElementById('ranked-list').innerHTML=`<div class="market-analysis-head"><span>Investment segment</span><span>YoY</span><span>3Y</span><span>5Y</span></div>` + rows.map(r=>{
+    const fmt=v=>v==null?'—':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
+    const cls=v=>v==null?'pending':(v>=0?'positive':'negative');
+    return `<div class="analysis-row"><div class="analysis-asset"><div class="asset-name-line"><strong>${escapeHtml(r.asset)}</strong><button class="tracked-btn" type="button" data-title="${escapeHtml(r.asset)}" data-slug="${escapeHtml(r.slug)}" aria-label="Show tracked options">i</button></div><small>${escapeHtml(r.basis||'')}</small></div><b class="${cls(r.yoy_return)}">${fmt(r.yoy_return)}</b><b class="${cls(r.three_year_return)}">${fmt(r.three_year_return)}</b><b class="${cls(r.five_year_return)}">${fmt(r.five_year_return)}</b></div>`;
+  }).join('');
+  document.querySelectorAll('.tracked-btn').forEach(btn=>btn.addEventListener('click',()=>openTrackedModal(btn.dataset.title, btn.dataset.slug)));
+  const scenarios=analysis.scenario_comparison||[];
+  document.getElementById('scenario-list').innerHTML=`<div class="options-head"><span>Allocation options</span><small>3 options within your ${escapeHtml(analysis.risk)} risk level</small></div>` + scenarios.map((sc,idx)=>{const alloc=(sc.allocation_breakup||[]).map(a=>{const info=assetBySlug[a.slug]; return `${escapeHtml(info?.short||a.slug)} ${Number(a.percent).toFixed(0)}%`;}).join(' • '); return `<div class="scenario-card ${sc.is_selected?'selected':''}"><div class="scenario-card-top"><div><span class="option-label">OPTION ${idx+1}</span><strong>${escapeHtml(sc.name.replace(/^Option\s*\d+\s*[—-]?\s*/i,''))}</strong><small>${escapeHtml(sc.description)}</small></div>${sc.is_selected?'<span class="recommended-badge">Suggested</span>':''}</div><div class="scenario-metrics"><div><span>Annual estimate</span><b>${Number(sc.annual_return_estimate||0).toFixed(1)}%</b></div><div><span>Value after ${analysis.horizon} years</span><b>₹${money.format(sc.projected_value)}</b></div></div><div class="scenario-allocation">${alloc}</div></div>`;}).join('');
+  document.getElementById('plan-explanation').textContent=analysis.explanation||'';
+}
+
 async function createPlan(e){
  e.preventDefault();
  const payload={
@@ -205,45 +229,24 @@ async function createPlan(e){
  if(allocationChart)allocationChart.destroy();
 
  try{
-   const ar=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-   const analysis=await ar.json();
-   if(ar.ok){
-     document.getElementById('plan-title').textContent=`Data-driven allocation · ₹${money.format(analysis.amount)}`;
-     document.getElementById('analysis-explanation').textContent='FinanX averages the available 1Y, 3Y and 5Y histories across the tracked entities in each segment, then combines those results with risk, liquidity, goal and horizon to calculate the allocation.';
-     document.getElementById('proj-invested').textContent='₹'+money.format(analysis.amount);
-     document.getElementById('proj-rate').textContent=(analysis.annual_return_estimate!=null?analysis.annual_return_estimate.toFixed(1)+'% / year':'—');
-     document.getElementById('proj-horizon-value').textContent=(analysis.projected_value!=null?'₹'+money.format(analysis.projected_value):'—');
-     document.getElementById('allocation-list').innerHTML=`<div class="breakup-head"><span>Investment breakup</span><span>Value after horizon</span></div>` + analysis.allocations.map(a=>`<div class="alloc-row alloc-return-row"><div><strong>${escapeHtml(a.asset)}</strong><span>Invested ₹${money.format(a.amount)} • ${a.percent}% of portfolio</span></div><div class="alloc-return"><b>₹${money.format(a.projected_value)}</b><small>After ${analysis.horizon} years • est. gain ₹${money.format(a.projected_gain)}</small></div></div>`).join('');
-     const selectedLabels=analysis.allocations.map(a=>a.asset), selectedVals=analysis.allocations.map(a=>a.percent);
-     if(allocationChart)allocationChart.destroy();
-     allocationChart=new Chart(document.getElementById('allocationChart'),{type:'doughnut',data:{labels:selectedLabels,datasets:[{data:selectedVals,backgroundColor:['#111827','#2563eb','#10b981','#f59e0b','#7c3aed','#ef4444','#0ea5e9','#94a3b8'],borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{boxWidth:12,usePointStyle:true,font:{family:'DM Sans'}}}},cutout:'68%'}});
-     const rows=analysis.ranked_categories.slice(0,8);
-     document.getElementById('ranked-list').innerHTML=`<div class="market-analysis-head"><span>Investment segment</span><span>YoY</span><span>3Y</span><span>5Y</span></div>` + rows.map(r=>{
-       const fmt=v=>v==null?'—':`${v>=0?'+':''}${Number(v).toFixed(1)}%`;
-       const cls=v=>v==null?'pending':(v>=0?'positive':'negative');
-       return `<div class="analysis-row">
-         <div class="analysis-asset">
-           <div class="asset-name-line"><strong>${escapeHtml(r.asset)}</strong><button class="tracked-btn" type="button" data-title="${escapeHtml(r.asset)}" data-slug="${escapeHtml(r.slug)}" aria-label="Show tracked options">i</button></div>
-           <small>${escapeHtml(r.basis||'')}</small>
-         </div>
-         <b class="${cls(r.yoy_return)}">${fmt(r.yoy_return)}</b>
-         <b class="${cls(r.three_year_return)}">${fmt(r.three_year_return)}</b>
-         <b class="${cls(r.five_year_return)}">${fmt(r.five_year_return)}</b>
-       </div>`;
-     }).join('');
-     document.querySelectorAll('.tracked-btn').forEach(btn=>btn.addEventListener('click',()=>openTrackedModal(btn.dataset.title, btn.dataset.slug)));
-     const scenarios=analysis.scenario_comparison||[];
-     document.getElementById('scenario-list').innerHTML=`<div class="options-head"><span>Allocation options</span><small>3 options within your ${escapeHtml(analysis.risk)} risk level</small></div>` + scenarios.map((sc,idx)=>{const alloc=(sc.allocation_breakup||[]).map(a=>{const info=assetBySlug[a.slug]; return `${escapeHtml(info?.short||a.slug)} ${Number(a.percent).toFixed(0)}%`;}).join(' • '); return `<div class="scenario-card ${sc.is_selected?'selected':''}"><div class="scenario-card-top"><div><span class="option-label">OPTION ${idx+1}</span><strong>${escapeHtml(sc.name.replace(/^Option\s*\d+\s*[—-]?\s*/i,''))}</strong><small>${escapeHtml(sc.description)}</small></div>${sc.is_selected?'<span class="recommended-badge">Suggested</span>':''}</div><div class="scenario-metrics"><div><span>Annual estimate</span><b>${Number(sc.annual_return_estimate||0).toFixed(1)}%</b></div><div><span>Value after ${analysis.horizon} years</span><b>₹${money.format(sc.projected_value)}</b></div></div><div class="scenario-allocation">${alloc}</div></div>`;}).join('');
-     document.getElementById('plan-explanation').textContent=analysis.explanation;
-   } else {
-     document.getElementById('analysis-explanation').textContent=analysis.error||'Market analysis is unavailable.';
-     document.getElementById('allocation-list').innerHTML='';
-   }
+   // Fast phase: show a usable allocation immediately.
+   const fr=await fetch('/api/analyze/fast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+   const fast=await fr.json();
+   if(fr.ok) renderPlanResult(fast);
+
+   // Full phase: warm the complete tracked universe, then silently replace
+   // the quick result with the full tracked-history result.
+   fetch('/api/market/warm',{method:'POST',keepalive:true,cache:'no-store'})
+     .then(()=>fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}))
+     .then(r=>r.json())
+     .then(full=>{ if(full && full.allocations) renderPlanResult(full); })
+     .catch(()=>{});
  }catch(err){
    document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
    document.getElementById('allocation-list').innerHTML='';
  }
 }
+
 
 document.getElementById('planner-form').addEventListener('submit',createPlan);
 
