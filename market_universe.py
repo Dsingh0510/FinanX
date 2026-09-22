@@ -18,6 +18,15 @@ _QUOTE_CACHE = {}
 TTL = 30 * 60
 QUOTE_TTL = 60
 
+TRACKING_LIMITS = {
+    "stocks": 30,
+    "fno": 30,
+    "mutual-funds": 30,
+    "bonds": 20,
+    "gold": 3,
+    "commodities": 20,
+    "currency": 10,
+}
 
 def _headers():
     token = os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip()
@@ -264,14 +273,16 @@ LIQUID_SYMBOLS = [
 ]
 
 
-def _eq_instruments():
+def _eq_instruments(limit=None):
     rows = [x for x in instruments() if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
     by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in rows}
-    return [by_symbol[s] for s in LIQUID_SYMBOLS if s in by_symbol][:100]
+    limit = TRACKING_LIMITS["stocks"] if limit is None else limit
+    return [by_symbol[s] for s in LIQUID_SYMBOLS if s in by_symbol][:limit]
+
 
 
 def compare_stocks():
-    rows = _eq_instruments()
+    rows = _eq_instruments(TRACKING_LIMITS["stocks"])
     quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
     for row in rows:
@@ -297,7 +308,7 @@ def compare_stocks():
     output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
     for i, row in enumerate(output, 1):
         row["rank"] = i
-    return output[:100]
+    return output[:TRACKING_LIMITS["stocks"]]
 
 
 def _parse_expiry(value):
@@ -338,7 +349,7 @@ def compare_fno():
 
     futures = [r for r in rows if r.get("instrument_type") == "FUT" and r.get("underlying_type") in ("EQUITY", "INDEX")]
     options = [r for r in rows if r.get("instrument_type") in ("CE", "PE") and r.get("underlying_type") in ("EQUITY", "INDEX")]
-    rows = futures[:120] + options[:380]
+    rows = futures[:15] + options[:15]
 
     quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
@@ -374,10 +385,10 @@ def compare_fno():
     result = futures + options
     for i, row in enumerate(result, 1):
         row["rank"] = i
-    return result[:100]
+    return result[:TRACKING_LIMITS["fno"]]
 
 
-def _bond_instruments(limit=50):
+def _bond_instruments(limit=None):
     """Find listed debt-like instruments from the Upstox equity universe."""
     words = (
         "BOND", "GILT", "SDL", "GSEC", "BHARAT", "NCD", "DEBENTURE",
@@ -400,6 +411,7 @@ def _bond_instruments(limit=50):
         0 if "GSEC" in str(x.get("name", "")).upper() else 1,
         str(x.get("trading_symbol", "")).upper(),
     ))
+    limit = TRACKING_LIMITS["bonds"] if limit is None else limit
     return rows[:limit]
 
 
@@ -420,26 +432,26 @@ def history_universe():
             + " " + str(x.get("name", "")).upper()
             + " " + str(x.get("trading_symbol", "")).upper()
         )
-    ][:5]
-    commodity_rows = _active_rows({"MCX_FO"}, {"FUT"})[:50]
+    ][:TRACKING_LIMITS["gold"]]
+    commodity_rows = _active_rows({"MCX_FO"}, {"FUT"})[:TRACKING_LIMITS["commodities"]]
     currency_rows = [
         r for r in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
         if r.get("underlying_type") == "CUR"
-    ][:50]
+    ][:TRACKING_LIMITS["currency"]]
 
     return {
-        "stocks": _eq_instruments()[:100],
-        "bonds": _bond_instruments(50),
-        "mutual-funds": compare_mutual_funds(100),
+        "stocks": _eq_instruments(TRACKING_LIMITS["stocks"]),
+        "bonds": _bond_instruments(TRACKING_LIMITS["bonds"]),
+        "mutual-funds": compare_mutual_funds(TRACKING_LIMITS["mutual-funds"]),
         "gold": gold_rows,
         "commodities": commodity_rows,
         "currency": currency_rows,
-        "fno": fno_rows[:100],
+        "fno": fno_rows[:TRACKING_LIMITS["fno"]],
     }
 
 
 def compare_bonds():
-    rows = _bond_instruments(160)
+    rows = _bond_instruments(TRACKING_LIMITS["bonds"])
     quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
     for row in rows:
@@ -462,16 +474,16 @@ def compare_bonds():
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
-    for i, row in enumerate(output[:50], 1):
+    for i, row in enumerate(output[:TRACKING_LIMITS["bonds"]], 1):
         row["rank"] = i
-    return output[:50]
+    return output[:TRACKING_LIMITS["bonds"]]
 
 
 def compare_commodities():
     rows = _active_rows({"MCX_FO"}, {"FUT"})
-    quotes = _quotes([_instrument_key(r) for r in rows[:250]])
+    quotes = _quotes([_instrument_key(r) for r in rows[:TRACKING_LIMITS["commodities"]]])
     output = []
-    for row in rows[:250]:
+    for row in rows[:TRACKING_LIMITS["commodities"]]:
         key = _instrument_key(row)
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
@@ -492,9 +504,9 @@ def compare_commodities():
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
-    for i, row in enumerate(output[:50], 1):
+    for i, row in enumerate(output[:TRACKING_LIMITS["commodities"]], 1):
         row["rank"] = i
-    return output[:50]
+    return output[:TRACKING_LIMITS["commodities"]]
 
 
 def compare_gold():
@@ -529,9 +541,9 @@ def compare_gold():
 def compare_currency():
     rows = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
     rows = [r for r in rows if r.get("underlying_type") == "CUR"]
-    quotes = _quotes([_instrument_key(r) for r in rows[:150]])
+    quotes = _quotes([_instrument_key(r) for r in rows[:TRACKING_LIMITS["currency"]]])
     output = []
-    for row in rows[:150]:
+    for row in rows[:TRACKING_LIMITS["currency"]]:
         key = _instrument_key(row)
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
@@ -552,13 +564,15 @@ def compare_currency():
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
-    for i, row in enumerate(output[:50], 1):
+    for i, row in enumerate(output[:TRACKING_LIMITS["currency"]], 1):
         row["rank"] = i
-    return output[:50]
+    return output[:TRACKING_LIMITS["currency"]]
 
 
-def compare_mutual_funds(limit=100):
-    """Return an Upstox mutual-fund universe, preferring investable direct-growth schemes."""
+def compare_mutual_funds(limit=None):
+    """Return the configured Upstox mutual-fund universe."""
+    if limit is None:
+        limit = TRACKING_LIMITS["mutual-funds"]
     raw = mutual_fund_instruments()
 
     if isinstance(raw, list):
@@ -655,11 +669,11 @@ def tracking_universe():
         if expiries:
             nearest = min(expiries)
             fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
-    fno_rows = fno_rows[:100]
+    fno_rows = fno_rows[:TRACKING_LIMITS["fno"]]
 
-    bond_rows = _bond_instruments(50)
+    bond_rows = _bond_instruments(TRACKING_LIMITS["bonds"])
 
-    fund_rows = compare_mutual_funds(100)
+    fund_rows = compare_mutual_funds(TRACKING_LIMITS["mutual-funds"])
 
     return {
         "stocks": [x.get("trading_symbol") or x.get("short_name") or x.get("name") for x in stock_rows[:100]],
