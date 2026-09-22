@@ -199,7 +199,7 @@ async function createPlan(e){
  document.getElementById('plan-content').classList.remove('hidden');
  document.getElementById('plan-title').textContent=`₹${money.format(data.amount)} · ${data.risk} profile`;
  document.getElementById('plan-meta').textContent=`${data.horizon} year horizon • ${data.goal} • ${data.liquidity} liquidity • ${data.emergency_buffer?'Emergency fund kept aside':'Emergency fund not marked aside'}`;
- document.getElementById('plan-explanation').textContent='Scanning the configured market universe and calculating a risk-adjusted allocation from tracked market data…';
+ document.getElementById('plan-explanation').textContent='';
  document.getElementById('plan-note').textContent=data.notes[0];
  document.querySelectorAll('.projection-summary').forEach(el=>el.remove());
  document.getElementById('plan-meta').insertAdjacentHTML('afterend', `
@@ -208,7 +208,7 @@ async function createPlan(e){
      <div><span>Estimated annual rate</span><b id="proj-rate">—</b></div>
      <div><span>Value after horizon</span><b id="proj-horizon-value">—</b></div>
    </div>`);
- document.getElementById('allocation-list').innerHTML='<div class="analysis-loading">Scanning the tracked market universe and selecting risk-adjusted entities…</div>';
+ document.getElementById('allocation-list').innerHTML='';
  if(allocationChart)allocationChart.destroy();
  setAnalysisLoading(true);
  try{
@@ -216,7 +216,7 @@ async function createPlan(e){
    const analysis=await ar.json();
    if(ar.ok){
      document.getElementById('plan-title').textContent=`Data-driven allocation · ₹${money.format(analysis.amount)}`;
-     document.getElementById('analysis-explanation').textContent='FinanX screens the configured tracked entities in each segment, applies your risk/horizon/liquidity/goal constraints, selects risk-adjusted candidates, and calculates projected returns from those selected entities rather than only using a fixed category split.';
+     document.getElementById('analysis-explanation').textContent='FinanX combines market history, current market data, risk, liquidity, goal and horizon to calculate the suggested distribution.';
      document.getElementById('proj-invested').textContent='₹'+money.format(analysis.amount);
      document.getElementById('proj-rate').textContent=(analysis.annual_return_estimate!=null?analysis.annual_return_estimate.toFixed(1)+'% / year':'—');
      document.getElementById('proj-horizon-value').textContent=(analysis.projected_value!=null?'₹'+money.format(analysis.projected_value):'—');
