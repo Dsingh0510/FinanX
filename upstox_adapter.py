@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +36,7 @@ _SNAPSHOT_AT = 0.0
 _ANALYSIS = None
 _ANALYSIS_AT = 0.0
 _HISTORY_GATE = threading.BoundedSemaphore(8)
+logger = logging.getLogger(__name__)
 
 
 def configured() -> bool:

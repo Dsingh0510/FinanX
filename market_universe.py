@@ -12,6 +12,7 @@ import requests
 BASE = "https://api.upstox.com/v3"
 COMPLETE_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
 MF_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/mf-instruments.json.gz"
+GLOBAL_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/global.json.gz"
 
 _INSTRUMENT_CACHE = {}
 _QUOTE_CACHE = {}
@@ -79,6 +80,35 @@ def instruments():
 
 def mutual_fund_instruments():
     return _cache_get(_INSTRUMENT_CACHE, "mutual-funds", lambda: _load_gzip_json(MF_INSTRUMENTS_URL), TTL)
+
+
+def global_instruments():
+    """Return Upstox global indices/indicators, including the USD INR indicator."""
+    return _cache_get(
+        _INSTRUMENT_CACHE,
+        "global",
+        lambda: _load_gzip_json(GLOBAL_INSTRUMENTS_URL),
+        TTL,
+    )
+
+
+def _find_global_indicator_key(*terms):
+    wanted = [str(term).strip().upper() for term in terms if str(term).strip()]
+    if not wanted:
+        return None
+    try:
+        rows = global_instruments()
+    except Exception:
+        return None
+    if isinstance(rows, dict):
+        rows = rows.get("data") or rows.get("instruments") or []
+    for row in rows if isinstance(rows, list) else []:
+        if str(row.get("segment", "")).upper() != "GLOBAL_INDICATOR":
+            continue
+        label = " ".join([str(row.get("name", "")), str(row.get("trading_symbol", ""))]).upper()
+        if any(term in label for term in wanted):
+            return _instrument_key(row)
+    return None
 
 
 def _quotes(keys):
@@ -784,14 +814,35 @@ def market_now():
             add(label,_instrument_key(item),"commodity",unit)
 
     for label,terms in [
-        ("USD/INR",("USDINR",)),("EUR/INR",("EURINR",)),("GBP/INR",("GBPINR",)),
-        ("JPY/INR",("JPYINR",)),("AUD/INR",("AUDINR",)),("CNY/INR",("CNYINR",)),
-    ]:
-        rows=[x for x in all_futures if any(term in (str(x.get("underlying_symbol","")).upper()+" "+str(x.get("name","")).upper()+" "+str(x.get("trading_symbol","")).upper()) for term in terms)
-              and str(x.get("instrument_type","")).upper()=="FUT"]
-        item=_find_nearest_future(rows,lambda x:True)
-        if item:
-            add(label,_instrument_key(item),"currency")
+     # Upstox provides a dedicated GLOBAL_INDICATOR for USD INR.
+     # Use it as the homepage benchmark so the value does not depend on an
+     # expiring currency-futures contract.
+     usd_inr_key = _find_global_indicator_key("USD INR", "USDINR")
+     if usd_inr_key:
+         add("USD/INR", usd_inr_key, "currency", "₹/USD")
+     else:
+         rows=[x for x in all_futures if "USDINR" in (
+             str(x.get("underlying_symbol","")).upper()+" "
+             +str(x.get("name","")).upper()+" "
+             +str(x.get("trading_symbol","")).upper()
+         ) and str(x.get("instrument_type","")).upper()=="FUT"]
+         item=_find_nearest_future(rows,lambda x:True)
+         if item:
+             add("USD/INR",_instrument_key(item),"currency", "₹/USD")
+
+     for label,terms in [
+         ("EUR/INR",("EURINR",)),("GBP/INR",("GBPINR",)),
+         ("JPY/INR",("JPYINR",)),("AUD/INR",("AUDINR",)),("CNY/INR",("CNYINR",)),
+     ]:
+         rows=[x for x in all_futures if any(term in (
+             str(x.get("underlying_symbol","")).upper()+" "
+             +str(x.get("name","")).upper()+" "
+             +str(x.get("trading_symbol","")).upper()
+         ) for term in terms)
+               and str(x.get("instrument_type","")).upper()=="FUT"]
+         item=_find_nearest_future(rows,lambda x:True)
+         if item:
+             add(label,_instrument_key(item),"currency")
 
     for row in _bond_instruments(25):
         symbol=str(row.get("trading_symbol") or "").strip()
