@@ -202,12 +202,18 @@ def tracking():
             except Exception:
                 pass
 
+        live_segments = {
+            'commodities': ('commodities', 50, 'Upstox MCX commodity market quotes'),
+            'currency': ('currency', 50, 'Upstox currency market quotes'),
+            'gold': ('gold', 5, 'Upstox MCX gold contracts'),
+        }
         configs = {
             'stocks': ('stocks', 100, 'Live equity market quotes'),
             'fno': ('fno', 100, 'Live derivatives market quotes'),
             'mutual-funds': ('mutual-funds', 100, 'Upstox mutual-fund scheme master'),
             'bonds': ('bonds', 50, 'Listed bond/debt market quotes'),
             'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
+            **live_segments,
         }
 
         categories = {}
@@ -217,7 +223,20 @@ def tracking():
             elif slug == 'fd':
                 names = [f"{x.get('bank')} • {x.get('tenor')}" for x in fd_rows]
             else:
-                names = [str(x) for x in (catalog.get(key) or []) if x]
+                try:
+                    from market_universe import history_universe
+                    hu = history_universe()
+                    if slug in hu:
+                        universe_rows = hu.get(slug) or []
+                        names = [
+                            x.get('trading_symbol') or x.get('symbol') or x.get('name')
+                            for x in universe_rows
+                            if isinstance(x, dict) and (x.get('trading_symbol') or x.get('symbol') or x.get('name'))
+                        ]
+                    else:
+                        names = [str(x) for x in (catalog.get(key) or []) if x]
+                except Exception:
+                    names = [str(x) for x in (catalog.get(key) or []) if x]
             categories[slug] = {
                 'tracked': min(len(names), target) if target else len(names),
                 'target': target,
