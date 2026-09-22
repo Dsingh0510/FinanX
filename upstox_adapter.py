@@ -2,30 +2,35 @@ from __future__ import annotations
 
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 import requests
 
+from market_universe import (
+    compare_bonds,
+    compare_commodities,
+    compare_currency,
+    compare_fds,
+    compare_fno,
+    compare_gold,
+    compare_mutual_funds,
+    compare_stocks,
+    market_now,
+    tracking_universe,
+)
+
 BASE = "https://api.upstox.com/v3"
 _TIMEOUT = 8
-_HISTORY_TIMEOUT = 12
-_CACHE_TTL = 10 * 60
-_CACHE: dict[str, tuple[float, object]] = {}
-
-# Phase 1: only the equity listings the project is currently enabled for.
-NSE_EQ = [
-    ("NSE_EQ|INE002A01018", "Reliance Industries"),
-    ("NSE_EQ|INE040A01034", "HDFC Bank"),
-    ("NSE_EQ|INE467B01029", "TCS"),
-    ("NSE_EQ|INE009A01021", "Infosys"),
-]
-BSE_EQ = [
-    ("BSE_EQ|INE002A01018", "Reliance Industries"),
-    ("BSE_EQ|INE040A01034", "HDFC Bank"),
-    ("BSE_EQ|INE467B01029", "TCS"),
-    ("BSE_EQ|INE009A01021", "Infosys"),
-]
+_HISTORY_TIMEOUT = 10
+_SNAPSHOT_TTL = 8 * 60
+_ANALYSIS_TTL = 5 * 60
+_CACHE = {}
+_SNAPSHOT = None
+_SNAPSHOT_AT = 0.0
+_ANALYSIS = None
+_ANALYSIS_AT = 0.0
 
 
 def configured() -> bool:
@@ -40,45 +45,28 @@ def _headers() -> dict[str, str]:
 
 
 def _get(url: str, *, params: dict | None = None, timeout: int = _TIMEOUT) -> dict:
-    try:
-        r = requests.get(url, headers=_headers(), params=params, timeout=timeout)
-        r.raise_for_status()
-        payload = r.json()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Upstox request failed: {exc}") from exc
-    except ValueError as exc:
-        raise RuntimeError("Upstox returned invalid JSON.") from exc
+    r = requests.get(url, headers=_headers(), params=params, timeout=timeout)
+    r.raise_for_status()
+    payload = r.json()
     if payload.get("status") not in (None, "success"):
-        raise RuntimeError(str(payload.get("message") or "Upstox API error."))
+        raise RuntimeError(str(payload.get("message") or "Upstox API error"))
     return payload
 
 
-def _cached(key: str, factory):
+def _cached(key: str, factory, ttl: float):
     now = datetime.now(timezone.utc).timestamp()
     hit = _CACHE.get(key)
-    if hit and now - hit[0] < _CACHE_TTL:
+    if hit and now - hit[0] < ttl:
         return hit[1]
     value = factory()
     _CACHE[key] = (now, value)
     return value
 
 
-def _quotes(keys: list[str]) -> dict:
-    if not keys:
-        return {}
-    return _cached(
-        "quotes:" + ",".join(sorted(keys)),
-        lambda: (_get(
-            f"{BASE}/market-quote/quotes",
-            params={"instrument_key": ",".join(keys)},
-        ).get("data") or {}),
-    )
-
-
 def _series(instrument_key: str) -> list[tuple[datetime, float]]:
     def load():
         end = date.today()
-        start = end - timedelta(days=365 * 6 + 30)
+        start = end - timedelta(days=365 * 5 + 45)
         encoded = quote(instrument_key, safe="")
         url = f"{BASE}/historical-candle/{encoded}/weeks/1/{end.isoformat()}/{start.isoformat()}"
         data = _get(url, timeout=_HISTORY_TIMEOUT).get("data") or {}
@@ -96,487 +84,453 @@ def _series(instrument_key: str) -> list[tuple[datetime, float]]:
         rows.sort(key=lambda x: x[0])
         return rows
 
-    return _cached("history:" + instrument_key, load)
-
-
-def _nearest(rows: list[tuple[datetime, float]], target: datetime) -> float | None:
-    if not rows:
-        return None
-    return min(rows, key=lambda x: abs((x[0] - target).total_seconds()))[1]
+    return _cached("history:" + instrument_key, load, _ANALYSIS_TTL)
 
 
 def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     out = {
-        "available": False, "sample_size": 1,
-        "return_1y": None, "return_3y": None, "return_5y": None,
-        "volatility_annualized": None, "max_drawdown": None,
+        "available": False,
+        "sample_size": len(rows),
+        "return_1y": None,
+        "return_3y": None,
+        "return_5y": None,
+        "volatility_annualized": None,
+        "max_drawdown": None,
     }
     if len(rows) < 20:
         return out
+
     latest_dt, latest = rows[-1]
-    p1 = _nearest(rows, latest_dt - timedelta(days=365))
-    p3 = _nearest(rows, latest_dt - timedelta(days=365 * 3))
-    p5 = _nearest(rows, latest_dt - timedelta(days=365 * 5))
+
+    def nearest(days: int):
+        target = latest_dt - timedelta(days=days)
+        if not rows:
+            return None
+        return min(rows, key=lambda x: abs((x[0] - target).total_seconds()))[1]
+
+    p1 = nearest(365)
+    p3 = nearest(365 * 3)
+    p5 = nearest(365 * 5)
+
     try:
         r1 = ((latest / p1) - 1) * 100 if p1 else None
         r3 = ((latest / p3) ** (1 / 3) - 1) * 100 if p3 else None
         r5 = ((latest / p5) ** (1 / 5) - 1) * 100 if p5 else None
     except (TypeError, ValueError, ZeroDivisionError):
         r1 = r3 = r5 = None
-    weekly = [math.log(curr / prev) for (_, prev), (_, curr) in zip(rows[:-1], rows[1:]) if prev > 0 and curr > 0]
+
+    weekly = [
+        math.log(curr / prev)
+        for (_, prev), (_, curr) in zip(rows[:-1], rows[1:])
+        if prev > 0 and curr > 0
+    ]
     if weekly:
         mean = sum(weekly) / len(weekly)
         variance = sum((x - mean) ** 2 for x in weekly) / len(weekly)
         out["volatility_annualized"] = round(math.sqrt(variance) * math.sqrt(52) * 100, 2)
+
     peak = rows[0][1]
-    dd = 0.0
+    drawdown = 0.0
     for _, price in rows:
         peak = max(peak, price)
-        dd = min(dd, price / peak - 1)
+        drawdown = min(drawdown, price / peak - 1)
+
     out.update({
         "available": any(v is not None for v in (r1, r3, r5)),
         "return_1y": round(r1, 2) if r1 is not None else None,
         "return_3y": round(r3, 2) if r3 is not None else None,
         "return_5y": round(r5, 2) if r5 is not None else None,
-        "max_drawdown": round(dd * 100, 2),
+        "max_drawdown": round(drawdown * 100, 2),
     })
     return out
 
 
-def _yahoo_quote(symbol: str, label: str, kind: str, unit: str | None = None) -> dict | None:
+def _mfapi_metrics(scheme_key: str) -> dict:
+    # Fallback only: Upstox is attempted first for MF history.
+    code = str(scheme_key).split("|")[-1]
     try:
-        u = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        payload = requests.get(
-            u,
-            params={"range": "5d", "interval": "1d"},
-            headers={"User-Agent": "FinanX/1.0 educational project"},
-            timeout=6,
-        ).json()
-        result = ((payload.get("chart") or {}).get("result") or [None])[0]
-        if not result:
-            return None
-        closes = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
-        valid = [float(x) for x in closes if x is not None]
-        if not valid:
-            return None
-        price = valid[-1]
-        prev = valid[-2] if len(valid) > 1 else None
-        change = (price / prev - 1) * 100 if prev else None
+        r = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=8)
+        r.raise_for_status()
+        payload = r.json()
+        rows = []
+        for item in payload.get("data", []) or []:
+            try:
+                dt = datetime.strptime(item["date"], "%d-%m-%Y")
+                nav = float(item["nav"])
+            except Exception:
+                continue
+            if nav > 0:
+                rows.append((dt, nav))
+        rows.sort(key=lambda x: x[0])
+        if not rows:
+            return {}
+        latest_dt, latest = rows[-1]
+
+        def nearest(days):
+            target = latest_dt - timedelta(days=days)
+            return min(rows, key=lambda x: abs((x[0] - target).days))[1]
+
+        p1, p3, p5 = nearest(365), nearest(365 * 3), nearest(365 * 5)
         return {
-            "label": label,
-            "value": round(price, 2),
-            "today_change": round(change, 2) if change is not None else None,
-            "kind": kind,
-            "unit": unit,
-            "freshness": "public-reference",
+            "available": True,
+            "sample_size": len(rows),
+            "return_1y": round(((latest / p1) - 1) * 100, 2) if p1 else None,
+            "return_3y": round(((latest / p3) ** (1 / 3) - 1) * 100, 2) if p3 else None,
+            "return_5y": round(((latest / p5) ** (1 / 5) - 1) * 100, 2) if p5 else None,
+            "source": "MFAPI fallback",
         }
     except Exception:
-        return None
+        return {}
 
 
-def _stock_analysis() -> tuple[dict, list[dict]]:
-    rows = []
-    for key, name in NSE_EQ:
+def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]:
+    if not rows:
+        return []
+
+    # Screen the complete live universe first, then spend historical requests
+    # only on the shortlist so the analysis stays fast.
+    candidates = list(rows)
+    if category in {"stocks", "bonds", "commodities", "currency", "fno"}:
+        candidates.sort(key=lambda x: x.get("volume") or x.get("oi") or 0, reverse=True)
+    candidates = candidates[:limit]
+
+    def work(row):
+        item = dict(row)
+        key = row.get("instrument_key") or row.get("symbol")
+        if not key:
+            return item
         try:
             metrics = _metrics(_series(key))
-        except Exception:
-            continue
-        rows.append((key, name, metrics))
-    valid = [m for _, _, m in rows if m.get("available")]
-    metrics = {
-        "available": bool(valid),
-        "sample_size": len(valid),
-        "return_1y": None, "return_3y": None, "return_5y": None,
-    }
-    for field in ("return_1y", "return_3y", "return_5y"):
-        values = [m[field] for m in valid if m.get(field) is not None]
-        if values:
-            metrics[field] = round(sum(values) / len(values), 2)
-    tracked = []
-    for key, name, m in rows:
-        tracked.append({
-            "name": name,
-            "symbol": key,
-            "exchange": "NSE",
-            "yoy": m.get("return_1y"),
-            "three_year_return": m.get("return_3y"),
-            "five_year_return": m.get("return_5y"),
-        })
-    for key, name in BSE_EQ:
-        tracked.append({"name": name, "symbol": key, "exchange": "BSE"})
-    return metrics, tracked
-
-
-_TRACKING_CACHE: dict[str, tuple[float, dict]] = {}
-_TRACKING_TTL = 15 * 60
-
-
-def _tracking_snapshot() -> dict:
-    """Refresh live universes before the recommendation engine scores categories."""
-    now_ts = datetime.now(timezone.utc).timestamp()
-    hit = _TRACKING_CACHE.get("universe")
-    if hit and now_ts - hit[0] < _TRACKING_TTL:
-        return hit[1]
-
-    from market_universe import (
-        compare_stocks, compare_fno, compare_bonds, compare_fds, tracking_universe
-    )
-    from database import mutual_fund_metrics
-    from amfi_data import update_amfi_metrics, category_metrics, bond_proxy_metrics
-
-    stocks = []
-    fno = []
-    bonds = []
-    fds = []
-    funds = mutual_fund_metrics()
-    configured = {"stocks": [], "fno": [], "bonds": []}
-    try:
-        configured = tracking_universe()
-    except Exception:
-        configured = {"stocks": [], "fno": [], "bonds": []}
-    fund_refresh = None
-
-    try:
-        stocks = compare_stocks()
-    except Exception:
-        pass
-    try:
-        fno = compare_fno()
-    except Exception:
-        pass
-    try:
-        bonds = compare_bonds()
-    except Exception:
-        pass
-    try:
-        fds = compare_fds()
-    except Exception:
-        pass
-
-    if len(funds) < 100:
-        try:
-            fund_refresh = update_amfi_metrics()
-            funds = mutual_fund_metrics()
+            if metrics.get("available"):
+                item.update(metrics)
+                item["history_source"] = "Upstox historical candles"
+                return item
         except Exception:
             pass
 
-    snapshot = {
-        "stocks": stocks[:100],
-        "fno": fno[:100],
-        "bonds": bonds[:50],
-        "fds": fds,
-        "funds": funds[:100],
-        "fund_metrics": category_metrics(),
-        "bond_proxy_metrics": bond_proxy_metrics(),
-        "fund_refresh": fund_refresh,
-        "configured_universe": configured,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        if category == "mutual-funds":
+            fallback = _mfapi_metrics(key)
+            if fallback:
+                item.update(fallback)
+                item["history_source"] = "MFAPI fallback"
+        return item
+
+    out = []
+    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+        futures = [pool.submit(work, row) for row in candidates]
+        for future in as_completed(futures):
+            try:
+                out.append(future.result())
+            except Exception:
+                pass
+
+    return out
+
+
+def _category_metrics(rows: list[dict], default_vol: float) -> dict:
+    valid = [x for x in rows if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))]
+    result = {
+        "available": bool(valid),
+        "sample_size": len(valid),
+        "return_1y": None,
+        "return_3y": None,
+        "return_5y": None,
+        "volatility_annualized": None,
     }
-    _TRACKING_CACHE["universe"] = (now_ts, snapshot)
+    for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized"):
+        values = [float(x[key]) for x in valid if x.get(key) is not None]
+        if values:
+            result[key] = round(sum(values) / len(values), 2)
+    if result["volatility_annualized"] is None:
+        result["volatility_annualized"] = default_vol
+    return result
+
+
+def _load_live_universe() -> dict:
+    global _SNAPSHOT, _SNAPSHOT_AT
+    now = datetime.now(timezone.utc).timestamp()
+    if _SNAPSHOT is not None and now - _SNAPSHOT_AT < _SNAPSHOT_TTL:
+        return _SNAPSHOT
+
+    loaders = {
+        "stocks": compare_stocks,
+        "fno": compare_fno,
+        "bonds": compare_bonds,
+        "mutual-funds": compare_mutual_funds,
+        "fds": compare_fds,
+        "gold": compare_gold,
+        "commodities": compare_commodities,
+        "currency": compare_currency,
+    }
+
+    snapshot = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        jobs = {pool.submit(fn): key for key, fn in loaders.items()}
+        for future in as_completed(jobs):
+            key = jobs[future]
+            try:
+                snapshot[key] = future.result()
+            except Exception:
+                snapshot[key] = []
+
+    # Fallback sources are only touched when Upstox could not supply that
+    # segment. Mutual fund history is handled separately as a second-stage
+    # fallback; FD rates already use the official bank registry above.
+    if not snapshot.get("mutual-funds"):
+        try:
+            snapshot["mutual-funds"] = []
+            from amfi_data import tracking_fund_universe
+            snapshot["mutual-funds"] = [
+                {"name": name, "source": "AMFI fallback"}
+                for name in tracking_fund_universe(100)
+            ]
+        except Exception:
+            pass
+
+    _SNAPSHOT = snapshot
+    _SNAPSHOT_AT = now
     return snapshot
 
 
-def _live_breadth(rows: list[dict]) -> float | None:
-    changes = [float(x["today_change"]) for x in rows if x.get("today_change") is not None]
-    if not changes:
-        return None
-    adv = sum(1 for x in changes if x > 0)
-    dec = sum(1 for x in changes if x < 0)
-    flat = len(changes) - adv - dec
-    return round(50 + ((adv - dec) / len(changes)) * 50 + (flat / len(changes)) * 2.5, 1)
-
-
 def category_market_analysis() -> dict:
+    global _ANALYSIS, _ANALYSIS_AT
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if _ANALYSIS is not None and now_ts - _ANALYSIS_AT < _ANALYSIS_TTL:
+        return _ANALYSIS
+
     now = datetime.now(timezone.utc).isoformat()
-    try:
-        stock_metrics, historical_tracked = _stock_analysis()
-        stocks_status = "upstox"
-    except Exception:
-        stock_metrics = {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None}
-        historical_tracked = []
-        stocks_status = "unavailable"
+    snapshot = _load_live_universe()
 
-    try:
-        tracking = _tracking_snapshot()
-    except Exception as exc:
-        tracking = {"stocks": [], "fno": [], "bonds": [], "funds": [], "fds": [], "fund_metrics": {}, "bond_proxy_metrics": {}, "updated_at": now, "tracking_error": str(exc)}
+    stocks = snapshot.get("stocks", [])[:100]
+    fno = snapshot.get("fno", [])[:100]
+    bonds = snapshot.get("bonds", [])[:50]
+    funds = snapshot.get("mutual-funds", [])[:100]
+    fds = snapshot.get("fds", [])
+    gold = snapshot.get("gold", [])
+    commodities = snapshot.get("commodities", [])[:50]
+    currency = snapshot.get("currency", [])[:50]
 
-    stock_rows = tracking.get("stocks", [])
-    fno_rows = tracking.get("fno", [])
-    bond_rows = tracking.get("bonds", [])
-    fund_rows = tracking.get("funds", [])
-    fd_rows = tracking.get("fds", [])
-
-    # Merge the historical stock metrics available from the candle engine into
-    # the live 100-stock quote universe. Other stocks remain quote/risk-proxy
-    # candidates until more history is available.
-    historical_by_name = {
-        str(x.get("name", "")).strip().upper(): x
-        for x in (historical_tracked or [])
-        if x.get("name")
+    # Historical requests are parallel and limited to the shortlist. Live
+    # quotes already screened the complete universe.
+    history_jobs = {
+        "stocks": (stocks, "stocks", 12),
+        "bonds": (bonds, "bonds", 5),
+        "mutual-funds": (funds, "mutual-funds", 12),
+        "gold": (gold, "gold", 2),
+        "commodities": (commodities, "commodities", 3),
+        "currency": (currency, "currency", 3),
     }
-    for row in stock_rows:
-        hist = historical_by_name.get(str(row.get("name", "")).strip().upper())
-        if hist:
-            row.update({
-                "yoy": hist.get("yoy"),
-                "three_year_return": hist.get("three_year_return"),
-                "five_year_return": hist.get("five_year_return"),
-                "historical_available": True,
-            })
+    history_results = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {
+            pool.submit(_history_for_rows, rows, category, limit): category
+            for category, (rows, _, limit) in history_jobs.items()
+        }
+        for future in as_completed(futures):
+            category = futures[future]
+            try:
+                history_results[category] = future.result()
+            except Exception:
+                history_results[category] = []
 
-    live_breadth = _live_breadth(stock_rows)
-    if stock_rows:
-        stock_metrics = dict(stock_metrics)
-        stock_metrics.update({
-            "sample_size": len(stock_rows),
-            "historical_sample_size": stock_metrics.get("sample_size"),
-            "live_sample_size": len(stock_rows),
-            "live_breadth_score": live_breadth,
-            "advancers": sum(1 for x in stock_rows if (x.get("today_change") or 0) > 0),
-            "decliners": sum(1 for x in stock_rows if (x.get("today_change") or 0) < 0),
-        })
+    def merge(rows, history):
+        by_key = {}
+        for row in history:
+            by_key[str(row.get("instrument_key") or row.get("symbol") or row.get("name"))] = row
+        output = []
+        for row in rows:
+            key = str(row.get("instrument_key") or row.get("symbol") or row.get("name"))
+            item = dict(by_key.get(key) or row)
+            output.append(item)
+        return output
 
-    fund_metrics = dict(tracking.get("fund_metrics") or {})
-    if fund_rows:
-        fund_metrics["available"] = bool(fund_metrics.get("available"))
-        fund_metrics["sample_size"] = len(fund_rows)
-        fund_metrics["live_sample_size"] = len(fund_rows)
+    stocks = merge(stocks, history_results.get("stocks", []))
+    bonds = merge(bonds, history_results.get("bonds", []))
+    funds = merge(funds, history_results.get("mutual-funds", []))
+    gold = merge(gold, history_results.get("gold", []))
+    commodities = merge(commodities, history_results.get("commodities", []))
+    currency = merge(currency, history_results.get("currency", []))
 
-    bond_metrics = dict(tracking.get("bond_proxy_metrics") or {})
-    if not bond_metrics:
-        bond_metrics = {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None}
-    bond_metrics["live_sample_size"] = len(bond_rows)
-    bond_metrics["sample_size"] = max(int(bond_metrics.get("sample_size") or 0), len(bond_rows))
+    live_changes = [float(x["today_change"]) for x in stocks if x.get("today_change") is not None]
+    adv = sum(1 for x in live_changes if x > 0)
+    dec = sum(1 for x in live_changes if x < 0)
+    breadth = round(50 + ((adv - dec) / len(live_changes)) * 50, 1) if live_changes else None
 
-    fd_values = [float(x["rate"]) for x in fd_rows if x.get("rate") is not None]
+    stock_metrics = _category_metrics(stocks, 20.0)
+    stock_metrics.update({
+        "live_sample_size": len(snapshot.get("stocks", [])),
+        "advancers": adv,
+        "decliners": dec,
+        "live_breadth_score": breadth,
+    })
+
+    fund_metrics = _category_metrics(funds, 14.0)
+    bond_metrics = _category_metrics(bonds, 7.0)
+    gold_metrics = _category_metrics(gold, 16.0)
+    commodity_metrics = _category_metrics(commodities, 25.0)
+    currency_metrics = _category_metrics(currency, 12.0)
+
+    fd_values = [float(x["rate"]) for x in fds if x.get("rate") is not None]
     fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
     fd_metrics = {
         "available": bool(fd_values),
-        "sample_size": len(fd_rows),
+        "sample_size": len(fds),
         "return_1y": fd_rate,
         "return_3y": fd_rate,
         "return_5y": fd_rate,
-        "live_sample_size": len(fd_rows),
+        "volatility_annualized": 1.0,
         "rate_average": fd_rate,
     }
 
     result = {
         "fd": {
-            "status": "tracked",
-            "source": "FinanX bank-rate registry (verify before booking)",
+            "status": "fallback-official-bank-rates",
+            "source": "Official bank FD rate tables",
             "metrics": fd_metrics,
-            "analyzed_options": fd_rows,
+            "analyzed_options": fds,
             "updated_at": now,
         },
         "bonds": {
-            "status": "upstox+amfi-proxy",
-            "source": "Upstox listed bond/debt quotes + AMFI bond-fund proxy history",
+            "status": "upstox",
+            "source": "Upstox listed bond/debt quotes",
             "metrics": bond_metrics,
-            "analyzed_options": bond_rows,
+            "analyzed_options": bonds,
             "updated_at": now,
         },
         "mutual-funds": {
-            "status": "amfi",
-            "source": "AMFI official NAV/history",
+            "status": "upstox",
+            "source": "Upstox mutual-fund instrument master; historical fallback only where needed",
             "metrics": fund_metrics,
-            "analyzed_options": fund_rows,
+            "analyzed_options": funds,
             "updated_at": now,
         },
         "gold": {
-            "status": "not_configured",
-            "source": "Market Now only; not used as a live instrument suggestion in this build.",
-            "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Gold — tracked in Market Now"}],
+            "status": "upstox",
+            "source": "Upstox MCX gold contracts",
+            "metrics": gold_metrics,
+            "analyzed_options": gold,
             "updated_at": now,
         },
         "commodities": {
-            "status": "not_configured",
-            "source": "Market Now only; not used as a live instrument suggestion in this build.",
-            "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "Commodities — tracked separately"}],
+            "status": "upstox",
+            "source": "Upstox MCX commodity contracts",
+            "metrics": commodity_metrics,
+            "analyzed_options": commodities,
             "updated_at": now,
         },
         "currency": {
-            "status": "not_configured",
-            "source": "Market Now only; not used as a live instrument suggestion in this build.",
-            "metrics": {"available": False, "sample_size": 0, "return_1y": None, "return_3y": None, "return_5y": None},
-            "analyzed_options": [{"name": "USD/INR — tracked in Market Now"}],
+            "status": "upstox",
+            "source": "Upstox currency futures",
+            "metrics": currency_metrics,
+            "analyzed_options": currency,
             "updated_at": now,
         },
         "fno": {
             "status": "upstox",
-            "source": "Upstox Full Market Quotes V3",
+            "source": "Upstox F&O market quotes",
             "metrics": {
                 "available": False,
-                "sample_size": len(fno_rows),
-                "return_1y": None, "return_3y": None, "return_5y": None,
-                "live_sample_size": len(fno_rows),
-                "active_contracts": len(fno_rows),
+                "sample_size": len(fno),
+                "return_1y": None,
+                "return_3y": None,
+                "return_5y": None,
+                "live_sample_size": len(fno),
+                "active_contracts": len(fno),
             },
-            "analyzed_options": fno_rows,
+            "analyzed_options": fno,
             "updated_at": now,
         },
         "stocks": {
-            "status": stocks_status,
-            "source": "Upstox Historical Candle V3 + live Market Quote V3",
+            "status": "upstox",
+            "source": "Upstox full market quotes + historical candles",
             "metrics": stock_metrics,
-            "analyzed_options": stock_rows if stock_rows else historical_tracked,
+            "analyzed_options": stocks,
             "updated_at": now,
         },
     }
-    result["_tracking"] = {
-        "stocks_requested": 100, "stocks_tracked": len(stock_rows),
-        "fno_requested": 100, "fno_tracked": len(fno_rows),
-        "funds_requested": 100, "funds_tracked": len(fund_rows),
-        "bonds_requested": 50, "bonds_tracked": len(bond_rows),
-        "fds_tracked": len(fd_rows),
-        "updated_at": tracking.get("updated_at", now),
-    }
-    configured_stocks = len((tracking.get("configured_universe") or {}).get("stocks", []))
-    configured_fno = len((tracking.get("configured_universe") or {}).get("fno", []))
-    configured_bonds = len((tracking.get("configured_universe") or {}).get("bonds", []))
-    configured_funds = len(fund_rows)
 
-    result["_tracking"].update({
-        "configured_stocks": configured_stocks,
-        "configured_fno": configured_fno,
-        "configured_bonds": configured_bonds,
-        "configured_funds": configured_funds,
-        "live_stock_quotes": len(stock_rows),
-        "live_fno_quotes": len(fno_rows),
-        "live_bond_quotes": len(bond_rows),
-    })
+    try:
+        configured = tracking_universe()
+    except Exception:
+        configured = {"stocks": [], "fno": [], "bonds": []}
+
+    result["_tracking"] = {
+        "stocks_requested": 100,
+        "stocks_tracked": len(stocks),
+        "fno_requested": 100,
+        "fno_tracked": len(fno),
+        "funds_requested": 100,
+        "funds_tracked": len(funds),
+        "bonds_requested": 50,
+        "bonds_tracked": len(bonds),
+        "fds_tracked": len(fds),
+        "configured_stocks": len(configured.get("stocks", [])),
+        "configured_fno": len(configured.get("fno", [])),
+        "configured_bonds": len(configured.get("bonds", [])),
+        "configured_funds": len(funds),
+        "live_stock_quotes": len(snapshot.get("stocks", [])),
+        "live_fno_quotes": len(snapshot.get("fno", [])),
+        "live_bond_quotes": len(snapshot.get("bonds", [])),
+        "updated_at": now,
+    }
     result["_tracking"]["ready"] = (
-        configured_stocks >= 80 and
-        configured_fno >= 80 and
-        configured_funds >= 80 and
-        configured_bonds >= 10 and
-        len(fd_rows) >= 8
+        result["_tracking"]["configured_stocks"] >= 80
+        and result["_tracking"]["configured_fno"] >= 80
+        and result["_tracking"]["configured_funds"] >= 80
+        and result["_tracking"]["configured_bonds"] >= 10
+        and len(fds) >= 8
     )
     result["_tracking"]["message"] = (
-        "The entity universe is checked before the recommendation is generated. "
-        "Current quote coverage is reported separately so a temporary quote miss does not block a plan."
+        "The full configured market universe is screened with Upstox first. "
+        "Fallback data is used only where Upstox does not expose the required field."
     )
-    return result
 
-def _upstox_rows(keys: list[tuple[str, str, str]]) -> list[dict]:
-    if not keys:
-        return []
-    data = _quotes([x[0] for x in keys])
-    labels = {k: (n, ex) for k, n, ex in keys}
-    out = []
-    for raw, row in data.items():
-        key = raw.replace(":", "|", 1)
-        name, exchange = labels.get(key, (row.get("symbol") or raw, ""))
-        try:
-            value = float(row.get("last_price"))
-        except (TypeError, ValueError):
-            value = None
-        change = None
-        prev = row.get("prev_close_price")
-        if value is not None and prev not in (None, 0):
-            try:
-                change = (value / float(prev) - 1) * 100
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
-        out.append({
-            "label": f"{name} ({exchange})",
-            "value": round(value, 2) if value is not None else None,
-            "today_change": round(change, 2) if change is not None else None,
-            "kind": "equity",
-            "exchange": exchange,
-            "freshness": "live",
-        })
-    return out
+    _ANALYSIS = result
+    _ANALYSIS_AT = now_ts
+    return result
 
 
 def market_highlights() -> list[dict]:
-    """Build the homepage market board with live data first."""
     out = []
     try:
-        from market_universe import market_now
         out.extend(market_now())
     except Exception:
-        out = []
+        pass
 
-    fallback_targets = [
-        ("NIFTY 50", "^NSEI", "index", None),
-        ("NIFTY Bank", "^NSEBANK", "index", None),
-        ("NIFTY IT", "^CNXIT", "index", None),
-        ("Reliance Industries", "RELIANCE.NS", "equity", None),
-        ("HDFC Bank", "HDFCBANK.NS", "equity", None),
-        ("TCS", "TCS.NS", "equity", None),
-        ("USD/INR", "USDINR=X", "currency", "/$"),
-    ]
-
-    have = {x.get("label") for x in out}
-    for label, symbol, kind, unit in fallback_targets:
-        if label in have:
-            continue
-        row = _yahoo_quote(symbol, label, kind, unit)
-        if row:
-            out.append(row)
-
-    if not any(x.get("label") == "Gold" for x in out):
-        gold = _yahoo_quote("GC=F", "Gold", "gold", "/10g")
-        fx = next((x for x in out if x.get("label") == "USD/INR"), None)
-        if gold and fx:
-            gold = dict(gold)
-            gold["value"] = round(float(gold["value"]) * float(fx["value"]) * 10.0 / 31.1034768, 2)
-            gold["unit"] = "/10g"
-            out.append(gold)
-
-    fund_row = None
+    # Fund card: use the Upstox MF master first.
     try:
-        from database import mutual_fund_metrics
-        from amfi_data import update_amfi_metrics_fast
-        funds = mutual_fund_metrics()
-        if not funds:
-            update_amfi_metrics_fast()
-            funds = mutual_fund_metrics()
-        fund_row = next(
-            (
-                x for x in funds
-                if "HDFC Flexi Cap Fund" in str(x.get("scheme_name", ""))
-                and "Direct" in str(x.get("scheme_name", ""))
-                and x.get("latest_nav") is not None
-            ),
+        funds = compare_mutual_funds(100)
+        fund = next(
+            (x for x in funds if "HDFC Flexi Cap Fund" in str(x.get("name", ""))
+             and x.get("latest_nav") is not None),
             None,
         )
-        fund_row = fund_row or next((x for x in funds if x.get("latest_nav") is not None), None)
+        if fund:
+            out.append({
+                "label": "HDFC Flexi Cap Fund • Direct Growth",
+                "value": round(float(fund["latest_nav"]), 4),
+                "today_change": None,
+                "kind": "mutual_fund",
+                "unit": "Latest NAV",
+                "date": fund.get("latest_date"),
+                "freshness": "daily",
+            })
     except Exception:
-        fund_row = None
-
-    if fund_row is None:
-        fund_row = {"latest_nav": 2242.7570, "latest_date": "18-Sep-2026"}
-
-    out.append({
-        "label": "HDFC Flexi Cap Fund • Direct Growth",
-        "value": round(float(fund_row["latest_nav"]), 4),
-        "today_change": None,
-        "kind": "mutual_fund",
-        "unit": "Latest NAV",
-        "date": fund_row.get("latest_date"),
-        "freshness": "daily",
-    })
+        pass
 
     try:
-        from market_universe import compare_fds
         fd = compare_fds()[0]
-    except Exception:
-        fd = None
-
-    if fd:
         out.append({
             "label": "SBI FD • 1 Year",
-            "value": float(fd.get("rate")) if fd.get("rate") is not None else None,
+            "value": float(fd["rate"]),
             "today_change": None,
             "kind": "fd",
             "unit": "% p.a.",
             "date": fd.get("effective"),
             "freshness": "rate-reference",
         })
+    except Exception:
+        pass
 
     preferred = [
         "NIFTY 50",
@@ -596,7 +550,7 @@ def market_snapshot() -> dict:
     analysis = category_market_analysis()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": "market-live-universe",
+        "mode": "upstox-primary",
         "segments": [
             {
                 "slug": key,
@@ -610,29 +564,26 @@ def market_snapshot() -> dict:
             for key, value in analysis.items()
             if key != "_tracking"
         ],
-        "message": "Market data covers tracked stocks, derivatives, listed bond/debt quotes and index values. Mutual funds and bank FD rates use their respective source data.",
+        "message": "Upstox is the primary market-data source; other sources are used only where the required data is not exposed by Upstox.",
     }
 
 
 def healthcheck() -> dict:
     if not configured():
-        return {
-            "configured": False,
-            "reachable": False,
-            "error": "UPSTOX_ANALYTICS_TOKEN is missing.",
-        }
+        return {"configured": False, "reachable": False, "error": "UPSTOX_ANALYTICS_TOKEN is missing."}
     try:
-        rows = _upstox_rows([(NSE_EQ[0][0], NSE_EQ[0][1], "NSE")])
+        from market_universe import compare_stocks
+        rows = compare_stocks()[:1]
         return {
             "configured": True,
             "reachable": bool(rows),
             "sample": rows[0] if rows else None,
-            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "NSE_INDEX"],
+            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO", "MCX_FO", "NCD_FO", "BCD_FO"],
         }
     except Exception as exc:
         return {
             "configured": True,
             "reachable": False,
             "error": str(exc),
-            "enabled_segments": ["NSE_EQ", "BSE_EQ"],
+            "enabled_segments": ["NSE_EQ", "BSE_EQ", "NSE_FO", "BSE_FO", "MCX_FO", "NCD_FO", "BCD_FO"],
         }
