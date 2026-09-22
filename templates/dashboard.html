@@ -80,6 +80,16 @@
           </form>
         </div>
         <div class="panel result-panel" id="plan-panel">
+          <div id="analysis-loader" class="analysis-loader hidden" aria-live="polite">
+            <div class="loader-orbit"><span></span><span></span><span></span></div>
+            <div class="analysis-loader-copy">
+              <strong id="analysis-loader-title">Analysing your plan…</strong>
+              <span id="analysis-loader-text">Scanning the tracked market universe.</span>
+            </div>
+            <div class="analysis-loader-steps">
+              <span>Market data</span><span>Risk screen</span><span>Entity selection</span><span>Projection</span>
+            </div>
+          </div>
           <div class="empty-state" id="empty-state"><div class="empty-icon">◎</div><h3>Your plan will appear here.</h3><p>Enter your amount and preferences. FinanX will generate an illustrative allocation with a clear explanation of why each category is included.</p></div>
           <div id="plan-content" class="hidden">
             <div class="result-top"><div><div class="mini-label">ILLUSTRATIVE PLAN</div><h3 id="plan-title">Balanced plan</h3><p id="plan-meta"></p></div><span class="badge">Scenario</span></div>
@@ -177,6 +187,36 @@ document.getElementById('modal-close').onclick=()=>document.getElementById('info
 document.getElementById('info-modal').addEventListener('click',e=>{if(e.target.id==='info-modal')e.currentTarget.classList.add('hidden')});
 
 
+let loaderTimer = null;
+function setAnalysisLoading(on){
+ const loader=document.getElementById('analysis-loader');
+ const title=document.getElementById('analysis-loader-title');
+ const textEl=document.getElementById('analysis-loader-text');
+ const button=document.querySelector('#planner-form button[type="submit"]');
+ if(!loader) return;
+ if(on){
+   loader.classList.remove('hidden');
+   if(button) button.disabled=true;
+   const messages=[
+     ['Analysing your plan…','Scanning the tracked market universe.'],
+     ['Screening the market…','Comparing live quotes, NAVs and available rates.'],
+     ['Applying your risk profile…','Filtering candidates by risk, horizon, liquidity and goal.'],
+     ['Selecting entities…','Ranking the tracked options inside each segment.'],
+     ['Calculating projections…','Calculating the portfolio return and future values.']
+   ];
+   let i=0;
+   const tick=()=>{ if(!loader.classList.contains('hidden')){ title.textContent=messages[i][0]; textEl.textContent=messages[i][1]; i=(i+1)%messages.length; } };
+   tick();
+   clearInterval(loaderTimer);
+   loaderTimer=setInterval(tick,1100);
+ }else{
+   loader.classList.add('hidden');
+   if(button) button.disabled=false;
+   clearInterval(loaderTimer);
+   loaderTimer=null;
+ }
+}
+
 async function createPlan(e){
  e.preventDefault();
  const payload={amount:document.getElementById('amount').value,horizon:document.getElementById('horizon').value,risk:document.getElementById('risk').value,liquidity:document.getElementById('liquidity').value,goal:document.getElementById('goal').value,emergency:document.getElementById('emergency').value};
@@ -197,6 +237,7 @@ async function createPlan(e){
    </div>`);
  document.getElementById('allocation-list').innerHTML='<div class="analysis-loading">Scanning the tracked market universe and selecting risk-adjusted entities…</div>';
  if(allocationChart)allocationChart.destroy();
+ setAnalysisLoading(true);
  try{
    const ar=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
    const analysis=await ar.json();
@@ -235,6 +276,8 @@ async function createPlan(e){
  }catch(err){
    document.getElementById('analysis-explanation').textContent='Market analysis could not be loaded. Please retry when market data is available.';
    document.getElementById('allocation-list').innerHTML='<div class="analysis-loading">No data-driven allocation was produced.</div>';
+ }finally{
+   setAnalysisLoading(false);
  }
  document.getElementById('plan-panel').scrollIntoView({behavior:'smooth',block:'start'});
 }
