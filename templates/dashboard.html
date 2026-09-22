@@ -80,10 +80,6 @@
           </form>
         </div>
         <div class="panel result-panel" id="plan-panel">
-          <div id="analysis-loader" class="analysis-loader hidden" aria-hidden="true">
-            <div class="loader-orbit"><span></span><span></span><span></span></div>
-            <div class="loader-bars"><i></i><i></i><i></i><i></i></div>
-          </div>
           <div class="empty-state" id="empty-state"><div class="empty-icon">◎</div><h3>Your plan will appear here.</h3><p>Enter your amount and preferences. FinanX will generate an illustrative allocation with a clear explanation of why each category is included.</p></div>
           <div id="plan-content" class="hidden">
             <div class="result-top"><div><div class="mini-label">ILLUSTRATIVE PLAN</div><h3 id="plan-title">Balanced plan</h3><p id="plan-meta"></p></div><span class="badge">Scenario</span></div>
@@ -126,6 +122,9 @@
   <footer><span>FinanX</span><span>Educational simulation • No guaranteed returns</span></footer>
 </div>
 
+<div id="analysis-loader" class="analysis-loader hidden" aria-hidden="true">
+  <div class="loader-bars"><i></i><i></i><i></i><i></i></div>
+</div>
 <div id="tracked-modal" class="modal hidden">
   <div class="modal-card tracked-modal-card">
     <button class="modal-close" id="tracked-modal-close">×</button>
