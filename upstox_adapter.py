@@ -9,6 +9,7 @@ from urllib.parse import quote
 import requests
 
 from market_universe import (
+    TRACKING_LIMITS,
     compare_bonds,
     compare_commodities,
     compare_currency,
@@ -146,6 +147,72 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     return out
 
 
+def _public_history_metrics(symbol: str) -> dict:
+    """Calculate 1Y/3Y/5Y metrics from the same tracked stock using public market history."""
+    try:
+        yahoo_symbol = symbol if "." in str(symbol) or str(symbol).startswith("^") else f"{symbol}.NS"
+        r = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart",
+            params={"symbol": yahoo_symbol, "range": "5y", "interval": "1mo", "includePrePost": "false"},
+            headers={"User-Agent": "FinanX/1.0", "Accept": "application/json"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        result = ((r.json().get("chart") or {}).get("result") or [None])[0]
+        if not result:
+            return {}
+        ts = result.get("timestamp") or []
+        closes = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
+        rows = []
+        for t, close in zip(ts, closes):
+            try:
+                value = float(close) if close is not None else None
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and value > 0:
+                rows.append((datetime.fromtimestamp(int(t), tz=timezone.utc), value))
+        if len(rows) < 24:
+            return {}
+        rows.sort(key=lambda x: x[0])
+        latest_dt, latest = rows[-1]
+
+        def nearest(days):
+            target = latest_dt - timedelta(days=days)
+            return min(rows, key=lambda x: abs((x[0] - target).total_seconds()))[1]
+
+        p1, p3, p5 = nearest(365), nearest(365 * 3), nearest(365 * 5)
+        r1 = ((latest / p1) - 1) * 100 if p1 else None
+        r3 = ((latest / p3) ** (1 / 3) - 1) * 100 if p3 else None
+        r5 = ((latest / p5) ** (1 / 5) - 1) * 100 if p5 else None
+        returns = [
+            math.log(curr / prev)
+            for (_, prev), (_, curr) in zip(rows[:-1], rows[1:])
+            if prev > 0 and curr > 0
+        ]
+        vol = None
+        if returns:
+            mean = sum(returns) / len(returns)
+            variance = sum((x - mean) ** 2 for x in returns) / len(returns)
+            vol = math.sqrt(variance) * math.sqrt(12) * 100
+        peak = rows[0][1]
+        dd = 0.0
+        for _, price in rows:
+            peak = max(peak, price)
+            dd = min(dd, price / peak - 1)
+        return {
+            "available": any(v is not None for v in (r1, r3, r5)),
+            "sample_size": len(rows),
+            "return_1y": round(r1, 2) if r1 is not None else None,
+            "return_3y": round(r3, 2) if r3 is not None else None,
+            "return_5y": round(r5, 2) if r5 is not None else None,
+            "volatility_annualized": round(vol, 2) if vol is not None else None,
+            "max_drawdown": round(dd * 100, 2),
+            "history_source": "Public market history fallback",
+        }
+    except Exception:
+        return {}
+
+
 def _mfapi_metrics(scheme_key: str) -> dict:
     # Fallback only: Upstox is attempted first for MF history.
     code = str(scheme_key).split("|")[-1]
@@ -219,8 +286,20 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
             if metrics.get("available"):
                 item.update(metrics)
                 item["history_source"] = "Upstox historical candles"
+            elif category == "stocks":
+                public_symbol = row.get("symbol") or row.get("trading_symbol")
+                fallback = _public_history_metrics(public_symbol)
+                if fallback.get("available"):
+                    item.update(fallback)
         except Exception:
-            pass
+            if category == "stocks":
+                try:
+                    public_symbol = row.get("symbol") or row.get("trading_symbol")
+                    fallback = _public_history_metrics(public_symbol)
+                    if fallback.get("available"):
+                        item.update(fallback)
+                except Exception:
+                    pass
         return item
 
     out = []
@@ -387,14 +466,14 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     now = datetime.now(timezone.utc).isoformat()
     snapshot = _load_live_universe()
 
-    stocks = snapshot.get("stocks", [])[:100]
-    fno = snapshot.get("fno", [])[:100]
-    bonds = snapshot.get("bonds", [])[:50]
-    funds = snapshot.get("mutual-funds", [])[:100]
+    stocks = snapshot.get("stocks", [])[:TRACKING_LIMITS["stocks"]]
+    fno = snapshot.get("fno", [])[:TRACKING_LIMITS["fno"]]
+    bonds = snapshot.get("bonds", [])[:TRACKING_LIMITS["bonds"]]
+    funds = snapshot.get("mutual-funds", [])[:TRACKING_LIMITS["mutual-funds"]]
     fds = snapshot.get("fds", [])
     gold = snapshot.get("gold", [])
-    commodities = snapshot.get("commodities", [])[:50]
-    currency = snapshot.get("currency", [])[:50]
+    commodities = snapshot.get("commodities", [])[:TRACKING_LIMITS["commodities"]]
+    currency = snapshot.get("currency", [])[:TRACKING_LIMITS["currency"]]
 
     # Calculate segment averages across the complete tracked universe.
     from market_universe import history_universe
@@ -413,12 +492,12 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         pass
 
     history_jobs = {
-        "stocks": (hu.get("stocks", [])[:100], "stocks", None),
-        "bonds": (hu.get("bonds", [])[:50], "bonds", None),
-        "mutual-funds": (hu.get("mutual-funds", [])[:100], "mutual-funds", None),
-        "gold": (hu.get("gold", [])[:5], "gold", None),
-        "commodities": (hu.get("commodities", [])[:50], "commodities", None),
-        "currency": (hu.get("currency", [])[:50], "currency", None),
+        "stocks": (hu.get("stocks", [])[:TRACKING_LIMITS["stocks"]], "stocks", None),
+        "bonds": (hu.get("bonds", [])[:TRACKING_LIMITS["bonds"]], "bonds", None),
+        "mutual-funds": (hu.get("mutual-funds", [])[:TRACKING_LIMITS["mutual-funds"]], "mutual-funds", None),
+        "gold": (hu.get("gold", [])[:TRACKING_LIMITS["gold"]], "gold", None),
+        "commodities": (hu.get("commodities", [])[:TRACKING_LIMITS["commodities"]], "commodities", None),
+        "currency": (hu.get("currency", [])[:TRACKING_LIMITS["currency"]], "currency", None),
     }
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -587,13 +666,13 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         configured = {"stocks": [], "fno": [], "bonds": []}
 
     result["_tracking"] = {
-        "stocks_requested": 100,
+        "stocks_requested": TRACKING_LIMITS["stocks"],
         "stocks_tracked": len(stocks),
-        "fno_requested": 100,
+        "fno_requested": TRACKING_LIMITS["fno"],
         "fno_tracked": len(fno),
-        "funds_requested": 100,
+        "funds_requested": TRACKING_LIMITS["mutual-funds"],
         "funds_tracked": len(funds),
-        "bonds_requested": 50,
+        "bonds_requested": TRACKING_LIMITS["bonds"],
         "bonds_tracked": len(bonds),
         "fds_tracked": len(fds),
         "configured_stocks": len(configured.get("stocks", [])),
@@ -607,9 +686,9 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     }
     result["_tracking"]["ready"] = (
         result["_tracking"]["configured_stocks"] >= 80
-        and result["_tracking"]["configured_fno"] >= 80
-        and result["_tracking"]["configured_funds"] >= 80
-        and result["_tracking"]["configured_bonds"] >= 10
+        and result["_tracking"]["configured_fno"] >= 10
+        and result["_tracking"]["configured_funds"] >= 20
+        and result["_tracking"]["configured_bonds"] >= 5
         and len(fds) >= 8
     )
     result["_tracking"]["message"] = (
