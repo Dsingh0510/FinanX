@@ -121,130 +121,6 @@ def _quote_value(row):
     return ltp, change
 
 
-_PUBLIC_QUOTE_CACHE = {}
-PUBLIC_QUOTE_TTL = 30
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
-
-_PUBLIC_SYMBOLS = {
-    "NIFTY 50": "^NSEI",
-    "NIFTY Bank": "^NSEBANK",
-    "NIFTY IT": "^CNXIT",
-    "India VIX": "^INDIAVIX",
-    "NIFTY Midcap 100": "NIFTY_MIDCAP_100.NS",
-    "NIFTY Smallcap 100": "NIFTY_SMLCAP_100.NS",
-    "Reliance Industries": "RELIANCE.NS",
-    "HDFC Bank": "HDFCBANK.NS",
-    "TCS": "TCS.NS",
-    "Infosys": "INFY.NS",
-    "SBI": "SBIN.NS",
-    "ICICI Bank": "ICICIBANK.NS",
-    "Gold": "GC=F",
-    "Silver": "SI=F",
-    "Crude Oil": "CL=F",
-    "Copper": "HG=F",
-    "Natural Gas": "NG=F",
-    "Zinc": "ZNC=F",
-    "Aluminium": "ALI=F",
-    "USD/INR": "USDINR=X",
-    "EUR/INR": "EURINR=X",
-    "GBP/INR": "GBPINR=X",
-    "JPY/INR": "JPYINR=X",
-    "AUD/INR": "AUDINR=X",
-    "CNY/INR": "CNYINR=X",
-}
-
-_PUBLIC_UNITS = {
-    "Gold": "₹/10g",
-    "Silver": "₹/kg",
-    "Crude Oil": "₹/barrel",
-    "Copper": "₹/kg",
-    "Natural Gas": "₹/MMBtu",
-    "Zinc": "₹/tonne",
-    "Aluminium": "₹/tonne",
-}
-
-def _yahoo_raw(symbol: str) -> dict:
-    def load():
-        try:
-            r = requests.get(
-                YAHOO_CHART_URL,
-                params={"symbol": symbol, "range": "1d", "interval": "1m", "includePrePost": "true"},
-                headers={"User-Agent": "FinanX/1.0", "Accept": "application/json"},
-                timeout=8,
-            )
-            r.raise_for_status()
-            result = ((r.json().get("chart") or {}).get("result") or [None])[0]
-            if not result:
-                return {}
-            timestamps = result.get("timestamp") or []
-            closes = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
-            pairs = []
-            for ts, close in zip(timestamps, closes):
-                try:
-                    value = float(close) if close is not None else None
-                except (TypeError, ValueError):
-                    value = None
-                if value is not None:
-                    pairs.append((int(ts), value))
-            if not pairs:
-                return {}
-            latest_ts, latest = pairs[-1]
-            meta = result.get("meta") or {}
-            previous = meta.get("chartPreviousClose") or meta.get("previousClose")
-            try:
-                previous = float(previous) if previous is not None else None
-            except (TypeError, ValueError):
-                previous = None
-            if previous is None and len(pairs) >= 2:
-                previous = pairs[-2][1]
-            change = ((latest / previous) - 1) * 100 if previous not in (None, 0) else None
-            return {
-                "value": latest,
-                "today_change": change,
-                "timestamp": datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
-            }
-        except Exception:
-            return {}
-
-    return _cache_get(_PUBLIC_QUOTE_CACHE, symbol, load, PUBLIC_QUOTE_TTL)
-
-
-def _public_market_fallback(label: str, explicit_symbol: str | None = None):
-    symbol = explicit_symbol or _PUBLIC_SYMBOLS.get(label)
-    if not symbol:
-        return None
-
-    raw = _yahoo_raw(symbol)
-    if not raw:
-        return None
-
-    value = float(raw["value"])
-    unit = None
-    # Commodities are quoted in USD on Yahoo; convert to INR and make the unit explicit.
-    if label in {"Gold", "Silver", "Crude Oil", "Copper", "Natural Gas", "Zinc", "Aluminium"}:
-        fx = _yahoo_raw("USDINR=X")
-        if not fx:
-            return None
-        usd_inr = float(fx["value"])
-        conversions = {
-            "Gold": value * usd_inr / 31.1034768 * 10.0,       # troy oz -> 10g
-            "Silver": value * usd_inr / 0.0311034768,          # troy oz -> kg
-            "Crude Oil": value * usd_inr,                      # USD/barrel
-            "Copper": value * usd_inr / 0.45359237,            # USD/lb -> INR/kg
-            "Natural Gas": value * usd_inr,                    # USD/MMBtu
-            "Zinc": value * usd_inr,                           # USD/metric tonne
-            "Aluminium": value * usd_inr,                     # USD/metric tonne
-        }
-        value = conversions[label]
-        unit = _PUBLIC_UNITS[label]
-    return {
-        "value": round(value, 4 if label in {"USD/INR", "EUR/INR", "GBP/INR", "JPY/INR", "AUD/INR", "CNY/INR"} else 2),
-        "today_change": round(float(raw["today_change"]), 2) if raw.get("today_change") is not None else None,
-        "unit": unit,
-        "freshness": "public_intraday",
-        "date": raw.get("timestamp"),
-    }
-
 
 def _instrument_key(row):
     return row.get("instrument_key") or row.get("instrument_key_name")
@@ -737,208 +613,67 @@ def _nearest_future_by_terms(rows, terms):
 
 
 def market_now():
-    """Build a broad Market Now board; Upstox quote first, instrument price fallback."""
-    targets = []
-    seen = set()
-    last_prices = {}
-
-    def add(label, key, kind, unit=None, fallback_price=None, public_symbol=None):
-        identity = key or f"__public__:{kind}:{label}"
-        if identity in seen:
-            return
+    """Build the homepage Market Now board from Upstox quotes only."""
+    targets=[]; seen=set(); last_prices={}
+    def add(label,key,kind,unit=None,fallback_price=None):
+        identity=key or f"__upstox_missing__:{kind}:{label}"
+        if identity in seen:return
         seen.add(identity)
-        if fallback_price is not None:
-            last_prices[identity] = fallback_price
-        targets.append((label, key, kind, unit, public_symbol))
-
-    # Indices
-    for label, terms in [
-        ("NIFTY 50", ("NIFTY 50",)),
-        ("NIFTY Bank", ("NIFTY BANK", "BANK NIFTY")),
-        ("NIFTY IT", ("NIFTY IT",)),
-        ("India VIX", ("INDIA VIX",)),
-        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100", "NIFTY MIDCAP")),
-        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100", "NIFTY SMALLCAP")),
-    ]:
-        add(label, _index_key_from_terms(*terms), "index", None, None, _PUBLIC_SYMBOLS.get(label))
-
-    # Equities
-    eq_rows = [
-        x for x in instruments()
-        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
-    ]
-    by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
-    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN", "ICICIBANK"):
-        row = by_symbol.get(symbol)
+        if fallback_price is not None:last_prices[identity]=fallback_price
+        targets.append((label,key,kind,unit))
+    for label,terms in [
+        ("NIFTY 50",("NIFTY 50",)),("NIFTY Bank",("NIFTY BANK","BANK NIFTY")),
+        ("NIFTY IT",("NIFTY IT",)),("India VIX",("INDIA VIX",)),
+        ("NIFTY Midcap 100",("NIFTY MIDCAP 100","NIFTY MIDCAP")),
+        ("NIFTY Smallcap 100",("NIFTY SMALLCAP 100","NIFTY SMALLCAP")),
+    ]: add(label,_index_key_from_terms(*terms),"index")
+    eq_rows=[x for x in instruments() if x.get("segment")=="NSE_EQ" and x.get("instrument_type")=="EQ"]
+    by_symbol={str(x.get("trading_symbol","")).upper():x for x in eq_rows}
+    for symbol in ("RELIANCE","HDFCBANK","TCS","INFY","SBIN","ICICIBANK"):
+        row=by_symbol.get(symbol)
         if row:
-            try:
-                master_price = float(row.get("last_price")) if row.get("last_price") is not None else None
-            except (TypeError, ValueError):
-                master_price = None
-            add(
-                row.get("short_name") or row.get("name") or symbol,
-                _instrument_key(row),
-                "equity",
-                None,
-                master_price,
-                f"{symbol}.NS",
-            )
-
-    all_futures = [
-        x for x in instruments()
-        if str(x.get("instrument_type", "")).upper() == "FUT"
-    ]
-
-    # Commodities
-    for label, terms, unit in [
-        ("Gold", ("GOLD",), "/10g"),
-        ("Silver", ("SILVER",), None),
-        ("Crude Oil", ("CRUDEOIL", "CRUDE OIL", "CRUDE"), None),
-        ("Copper", ("COPPER",), None),
-        ("Natural Gas", ("NATURALGAS", "NATURAL GAS", "NATGAS"), None),
-        ("Zinc", ("ZINC",), None),
-        ("Aluminium", ("ALUMINIUM", "ALUMINI"), None),
+            try: master_price=float(row.get("last_price")) if row.get("last_price") is not None else None
+            except (TypeError,ValueError): master_price=None
+            add(row.get("short_name") or row.get("name") or symbol,_instrument_key(row),"equity",None,master_price)
+    all_futures=[x for x in instruments() if str(x.get("instrument_type","")).upper()=="FUT"]
+    for label,terms,unit in [
+        ("Gold",("GOLD",),"/10g"),("Silver",("SILVER",),None),("Crude Oil",("CRUDEOIL","CRUDE OIL","CRUDE"),None),
+        ("Copper",("COPPER",),None),("Natural Gas",("NATURALGAS","NATURAL GAS","NATGAS"),None),
+        ("Zinc",("ZINC",),None),("Aluminium",("ALUMINIUM","ALUMINI"),None),
     ]:
-        rows = [
-            x for x in all_futures
-            if str(x.get("segment", "")).upper() == "MCX_FO"
-            and any(term in (
-                str(x.get("underlying_symbol", "")).upper()
-                + " "
-                + str(x.get("name", "")).upper()
-                + " "
-                + str(x.get("trading_symbol", "")).upper()
-            ) for term in terms)
-        ]
-        item = _find_nearest_future(rows, lambda x: True)
+        rows=[x for x in all_futures if str(x.get("segment","")).upper()=="MCX_FO" and any(term in (str(x.get("underlying_symbol","")).upper()+" "+str(x.get("name","")).upper()+" "+str(x.get("trading_symbol","")).upper()) for term in terms)]
+        item=_find_nearest_future(rows,lambda x:True)
         if item:
-            try:
-                master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
-            except (TypeError, ValueError):
-                master_price = None
-            add(label, _instrument_key(item), "commodity", unit, master_price, _PUBLIC_SYMBOLS.get(label))
-
-    # Currencies
-    for label, terms in [
-        ("USD/INR", ("USDINR",)),
-        ("EUR/INR", ("EURINR",)),
-        ("GBP/INR", ("GBPINR",)),
-        ("JPY/INR", ("JPYINR",)),
-        ("AUD/INR", ("AUDINR",)),
-        ("CNY/INR", ("CNYINR",)),
-    ]:
-        rows = [
-            x for x in all_futures
-            if any(term in (
-                str(x.get("underlying_symbol", "")).upper()
-                + " "
-                + str(x.get("name", "")).upper()
-                + " "
-                + str(x.get("trading_symbol", "")).upper()
-            ) for term in terms)
-            and str(x.get("instrument_type", "")).upper() == "FUT"
-        ]
-        item = _find_nearest_future(rows, lambda x: True)
+            try: master_price=float(item.get("last_price")) if item.get("last_price") is not None else None
+            except (TypeError,ValueError): master_price=None
+            add(label,_instrument_key(item),"commodity",unit,master_price)
+    for label,terms in [("USD/INR",("USDINR",)),("EUR/INR",("EURINR",)),("GBP/INR",("GBPINR",)),("JPY/INR",("JPYINR",)),("AUD/INR",("AUDINR",)),("CNY/INR",("CNYINR",))]:
+        rows=[x for x in all_futures if any(term in (str(x.get("underlying_symbol","")).upper()+" "+str(x.get("name","")).upper()+" "+str(x.get("trading_symbol","")).upper()) for term in terms) and str(x.get("instrument_type","")).upper()=="FUT"]
+        item=_find_nearest_future(rows,lambda x:True)
         if item:
-            try:
-                master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
-            except (TypeError, ValueError):
-                master_price = None
-            add(label, _instrument_key(item), "currency", None, master_price, _PUBLIC_SYMBOLS.get(label))
-
-    # Listed bonds/debt. Keep five distinct names.
-    bond_rows = _bond_instruments(25)
-    for row in bond_rows:
-        try:
-            master_price = float(row.get("last_price")) if row.get("last_price") is not None else None
-        except (TypeError, ValueError):
-            master_price = None
-        trading_symbol = str(row.get("trading_symbol") or "").strip()
-        public_symbol = f"{trading_symbol}.NS" if trading_symbol else None
-        add(
-            row.get("short_name") or row.get("name") or trading_symbol or "Listed Bond",
-            _instrument_key(row),
-            "bond",
-            None,
-            master_price,
-            public_symbol,
-        )
-        if sum(1 for x in targets if x[2] == "bond") >= 5:
-            break
-
-    quote_keys = [key for _, key, _, _, _ in targets if key]
-    try:
-        quotes = _quotes(quote_keys)
-    except Exception:
-        quotes = {}
-
-    # When the exchange quote endpoint is unavailable for a card, use a public
-    # intraday quote instead of leaving the user with an empty dash. The UI
-    # distinguishes this from an exchange-live quote.
-    missing = []
-    output = []
-    for label, key, kind, unit, public_symbol in targets:
-        q = _lookup_quote(quotes, key)
-        ltp, change = _quote_value(q)
-        identity = key or f"__public__:{kind}:{label}"
-        freshness = "live"
-        used_unit = unit
-        used_date = None
+            try: master_price=float(item.get("last_price")) if item.get("last_price") is not None else None
+            except (TypeError,ValueError): master_price=None
+            add(label,_instrument_key(item),"currency",None,master_price)
+    for row in _bond_instruments(25):
+        try: master_price=float(row.get("last_price")) if row.get("last_price") is not None else None
+        except (TypeError,ValueError): master_price=None
+        symbol=str(row.get("trading_symbol") or "").strip()
+        add(row.get("short_name") or row.get("name") or symbol or "Listed Bond",_instrument_key(row),"bond",None,master_price)
+        if sum(1 for x in targets if x[2]=="bond")>=5:break
+    quote_keys=[key for _,key,_,_ in targets if key]
+    try:quotes=_quotes(quote_keys)
+    except Exception:quotes={}
+    output=[]
+    for label,key,kind,unit in targets:
+        q=_lookup_quote(quotes,key); ltp,change=_quote_value(q)
+        identity=key or f"__upstox_missing__:{kind}:{label}"
+        freshness="live"
         if ltp is None:
-            ltp = last_prices.get(identity)
-            change = None
-            freshness = "latest"
+            ltp=last_prices.get(identity); change=None; freshness="latest"
         if ltp is None:
-            missing.append((label, key, kind, unit, public_symbol, identity))
-            continue
-
-        output.append({
-            "label": label,
-            "value": round(float(ltp), 4 if kind in ("currency", "commodity") else 2),
-            "today_change": round(change, 2) if change is not None else None,
-            "kind": kind,
-            "unit": used_unit,
-            "freshness": freshness,
-            "instrument_key": key,
-            "date": used_date,
-        })
-
-    if missing:
-        with ThreadPoolExecutor(max_workers=min(12, len(missing))) as pool:
-            futures = {
-                pool.submit(_public_market_fallback, label, public_symbol): (label, key, kind, unit, identity)
-                for label, key, kind, unit, public_symbol, identity in missing
-            }
-            for future in as_completed(futures):
-                label, key, kind, unit, identity = futures[future]
-                try:
-                    fallback = future.result()
-                except Exception:
-                    fallback = None
-                if fallback:
-                    output.append({
-                        "label": label,
-                        "value": fallback["value"],
-                        "today_change": fallback.get("today_change"),
-                        "kind": kind,
-                        "unit": fallback.get("unit") or unit,
-                        "freshness": fallback.get("freshness", "public_intraday"),
-                        "instrument_key": key,
-                        "date": fallback.get("date"),
-                    })
-                else:
-                    # Keep the card visible, but never invent a number.
-                    output.append({
-                        "label": label,
-                        "value": None,
-                        "today_change": None,
-                        "kind": kind,
-                        "unit": unit,
-                        "freshness": "unavailable",
-                        "instrument_key": key,
-                    })
-
-    # Restore the configured card order after parallel fallback calls.
-    order = {label: i for i, (label, *_rest) in enumerate(targets)}
-    output.sort(key=lambda row: order.get(row.get("label"), 9999))
+            output.append({"label":label,"value":None,"today_change":None,"kind":kind,"unit":unit,"freshness":"unavailable","instrument_key":key})
+        else:
+            output.append({"label":label,"value":round(float(ltp),4 if kind in ("currency","commodity") else 2),"today_change":round(change,2) if change is not None else None,"kind":kind,"unit":unit,"freshness":freshness,"instrument_key":key,"date":None})
+    order={label:i for i,(label,*_) in enumerate(targets)}
+    output.sort(key=lambda row:order.get(row.get("label"),9999))
     return output

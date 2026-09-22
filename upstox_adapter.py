@@ -147,229 +147,30 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     return out
 
 
-def _public_history_metrics(symbol: str) -> dict:
-    """Calculate 1Y/3Y/5Y metrics from the same tracked stock using public market history."""
-    try:
-        yahoo_symbol = symbol if "." in str(symbol) or str(symbol).startswith("^") else f"{symbol}.NS"
-        r = requests.get(
-            "https://query1.finance.yahoo.com/v8/finance/chart",
-            params={"symbol": yahoo_symbol, "range": "5y", "interval": "1mo", "includePrePost": "false"},
-            headers={"User-Agent": "FinanX/1.0", "Accept": "application/json"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        result = ((r.json().get("chart") or {}).get("result") or [None])[0]
-        if not result:
-            return {}
-        ts = result.get("timestamp") or []
-        closes = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
-        rows = []
-        for t, close in zip(ts, closes):
-            try:
-                value = float(close) if close is not None else None
-            except (TypeError, ValueError):
-                value = None
-            if value is not None and value > 0:
-                rows.append((datetime.fromtimestamp(int(t), tz=timezone.utc), value))
-        if len(rows) < 24:
-            return {}
-        rows.sort(key=lambda x: x[0])
-        latest_dt, latest = rows[-1]
-
-        def nearest(days):
-            target = latest_dt - timedelta(days=days)
-            return min(rows, key=lambda x: abs((x[0] - target).total_seconds()))[1]
-
-        p1, p3, p5 = nearest(365), nearest(365 * 3), nearest(365 * 5)
-        r1 = ((latest / p1) - 1) * 100 if p1 else None
-        r3 = ((latest / p3) ** (1 / 3) - 1) * 100 if p3 else None
-        r5 = ((latest / p5) ** (1 / 5) - 1) * 100 if p5 else None
-        returns = [
-            math.log(curr / prev)
-            for (_, prev), (_, curr) in zip(rows[:-1], rows[1:])
-            if prev > 0 and curr > 0
-        ]
-        vol = None
-        if returns:
-            mean = sum(returns) / len(returns)
-            variance = sum((x - mean) ** 2 for x in returns) / len(returns)
-            vol = math.sqrt(variance) * math.sqrt(12) * 100
-        peak = rows[0][1]
-        dd = 0.0
-        for _, price in rows:
-            peak = max(peak, price)
-            dd = min(dd, price / peak - 1)
-        return {
-            "available": any(v is not None for v in (r1, r3, r5)),
-            "sample_size": len(rows),
-            "return_1y": round(r1, 2) if r1 is not None else None,
-            "return_3y": round(r3, 2) if r3 is not None else None,
-            "return_5y": round(r5, 2) if r5 is not None else None,
-            "volatility_annualized": round(vol, 2) if vol is not None else None,
-            "max_drawdown": round(dd * 100, 2),
-            "history_source": "Public market history fallback",
-        }
-    except Exception:
-        return {}
-
-
-def _mfapi_metrics(scheme_key: str) -> dict:
-    # Fallback only: Upstox is attempted first for MF history.
-    code = str(scheme_key).split("|")[-1]
-    try:
-        r = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=8)
-        r.raise_for_status()
-        payload = r.json()
-        rows = []
-        for item in payload.get("data", []) or []:
-            try:
-                dt = datetime.strptime(item["date"], "%d-%m-%Y")
-                nav = float(item["nav"])
-            except Exception:
-                continue
-            if nav > 0:
-                rows.append((dt, nav))
-        rows.sort(key=lambda x: x[0])
-        if not rows:
-            return {}
-        latest_dt, latest = rows[-1]
-
-        def nearest(days):
-            target = latest_dt - timedelta(days=days)
-            return min(rows, key=lambda x: abs((x[0] - target).days))[1]
-
-        p1, p3, p5 = nearest(365), nearest(365 * 3), nearest(365 * 5)
-        return {
-            "available": True,
-            "sample_size": len(rows),
-            "return_1y": round(((latest / p1) - 1) * 100, 2) if p1 else None,
-            "return_3y": round(((latest / p3) ** (1 / 3) - 1) * 100, 2) if p3 else None,
-            "return_5y": round(((latest / p5) ** (1 / 5) - 1) * 100, 2) if p5 else None,
-            "source": "MFAPI fallback",
-        }
-    except Exception:
-        return {}
-
-
 def _history_for_rows(rows: list[dict], category: str, limit: int | None = None, mf_cache: dict | None = None) -> list[dict]:
+    """Enrich tracked rows only with Upstox historical candles."""
     if not rows:
         return []
     candidates = list(rows[:limit] if limit is not None else rows)
-    mf_cache = mf_cache or {}
-
     def work(row):
         item = dict(row)
         key = row.get("instrument_key") or row.get("symbol")
         if not key:
             return item
-
-        if category == "mutual-funds":
-            target_name = str(row.get("name", "")).strip().lower()
-            target_code = str(row.get("scheme_code", "")).split("|")[-1].strip()
-            cached = mf_cache.get(target_code) or mf_cache.get(target_name)
-            if cached:
-                item.update({
-                    "return_1y": cached.get("return_1y"),
-                    "return_3y": cached.get("return_3y"),
-                    "return_5y": cached.get("return_5y"),
-                    "history_source": cached.get("source") or "AMFI history",
-                })
-                return item
-            fallback = _mfapi_metrics(key)
-            if fallback:
-                item.update(fallback)
-                item["history_source"] = "MFAPI fallback"
-            return item
-
         try:
             metrics = _metrics(_series(key, unit="months"))
             if metrics.get("available"):
                 item.update(metrics)
                 item["history_source"] = "Upstox historical candles"
-            else:
-                public_symbol = row.get("symbol") or row.get("trading_symbol")
-                if category in {"commodities", "currency", "gold"}:
-                    text = " ".join(
-                        str(row.get(k, "")) for k in ("name", "symbol", "trading_symbol", "underlying", "underlying_symbol")
-                    ).upper()
-                    public_symbol = None
-                    if category == "gold" or "GOLD" in text:
-                        public_symbol = "GC=F"
-                    elif "SILVER" in text:
-                        public_symbol = "SI=F"
-                    elif "CRUDE" in text:
-                        public_symbol = "CL=F"
-                    elif "COPPER" in text:
-                        public_symbol = "HG=F"
-                    elif "NATURALGAS" in text or "NATURAL GAS" in text or "NATGAS" in text:
-                        public_symbol = "NG=F"
-                    elif "ZINC" in text:
-                        public_symbol = "ZNC=F"
-                    elif "ALUMIN" in text or "ALUMINI" in text:
-                        public_symbol = "ALI=F"
-                    elif "USDINR" in text or "USD/INR" in text:
-                        public_symbol = "USDINR=X"
-                    elif "EURINR" in text or "EUR/INR" in text:
-                        public_symbol = "EURINR=X"
-                    elif "GBPINR" in text or "GBP/INR" in text:
-                        public_symbol = "GBPINR=X"
-                    elif "JPYINR" in text or "JPY/INR" in text:
-                        public_symbol = "JPYINR=X"
-                    elif "AUDINR" in text or "AUD/INR" in text:
-                        public_symbol = "AUDINR=X"
-                    elif "CNYINR" in text or "CNY/INR" in text:
-                        public_symbol = "CNYINR=X"
-                fallback = _public_history_metrics(public_symbol) if public_symbol else {}
-                if fallback.get("available"):
-                    item.update(fallback)
         except Exception:
-            try:
-                public_symbol = row.get("symbol") or row.get("trading_symbol")
-                if category in {"commodities", "currency", "gold"}:
-                    text = " ".join(
-                        str(row.get(k, "")) for k in ("name", "symbol", "trading_symbol", "underlying", "underlying_symbol")
-                    ).upper()
-                    if category == "gold" or "GOLD" in text:
-                        public_symbol = "GC=F"
-                    elif "SILVER" in text:
-                        public_symbol = "SI=F"
-                    elif "CRUDE" in text:
-                        public_symbol = "CL=F"
-                    elif "COPPER" in text:
-                        public_symbol = "HG=F"
-                    elif "NATURALGAS" in text or "NATURAL GAS" in text or "NATGAS" in text:
-                        public_symbol = "NG=F"
-                    elif "ZINC" in text:
-                        public_symbol = "ZNC=F"
-                    elif "ALUMIN" in text or "ALUMINI" in text:
-                        public_symbol = "ALI=F"
-                    elif "USDINR" in text or "USD/INR" in text:
-                        public_symbol = "USDINR=X"
-                    elif "EURINR" in text or "EUR/INR" in text:
-                        public_symbol = "EURINR=X"
-                    elif "GBPINR" in text or "GBP/INR" in text:
-                        public_symbol = "GBPINR=X"
-                    elif "JPYINR" in text or "JPY/INR" in text:
-                        public_symbol = "JPYINR=X"
-                    elif "AUDINR" in text or "AUD/INR" in text:
-                        public_symbol = "AUDINR=X"
-                    elif "CNYINR" in text or "CNY/INR" in text:
-                        public_symbol = "CNYINR=X"
-                fallback = _public_history_metrics(public_symbol) if public_symbol else {}
-                if fallback.get("available"):
-                    item.update(fallback)
-            except Exception:
-                pass
+            pass
         return item
-
     out = []
     with ThreadPoolExecutor(max_workers=min(20, len(candidates))) as pool:
-        futures = [pool.submit(work, row) for row in candidates]
+        futures=[pool.submit(work,row) for row in candidates]
         for future in as_completed(futures):
-            try:
-                out.append(future.result())
-            except Exception:
-                pass
+            try: out.append(future.result())
+            except Exception: pass
     return out
 
 
@@ -449,68 +250,8 @@ def _load_live_universe() -> dict:
             except Exception:
                 snapshot[key] = []
 
-    # Upstox is primary for the live MF universe/latest NAV. AMFI supplies
-    # the historical NAV anchors for the same tracked 100-fund universe.
-    if snapshot.get("mutual-funds"):
-        try:
-            from database import mutual_fund_metrics
-            from amfi_data import update_amfi_metrics
-            cached = mutual_fund_metrics()
-            if len(cached) < 80:
-                update_amfi_metrics()
-                cached = mutual_fund_metrics()
-            by_name = {
-                str(x.get("scheme_name", "")).strip().lower(): x
-                for x in cached
-                if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
-            }
-            by_code = {
-                str(x.get("scheme_code", "")).strip(): x
-                for x in cached
-                if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
-            }
-            mf_cache = {**by_name, **by_code}
-            for row in snapshot["mutual-funds"]:
-                hist = by_name.get(str(row.get("name", "")).strip().lower())
-                if hist:
-                    row["return_1y"] = hist.get("return_1y")
-                    row["return_3y"] = hist.get("return_3y")
-                    row["return_5y"] = hist.get("return_5y")
-                    row["history_source"] = hist.get("source") or "AMFI history"
-        except Exception:
-            mf_cache = {}
-    if "mf_cache" not in locals():
-        mf_cache = {}
-
-    # Fallback sources are touched only when the primary Upstox segment call
-    # fails or returns no usable records.
+    # Upstox is the only market-data provider used by the application.
     snapshot["_fallback"] = {}
-    if any(not snapshot.get(key) for key in ("stocks", "fno", "bonds", "mutual-funds", "gold", "commodities", "currency")):
-        try:
-            import vercel_market
-            fallback = vercel_market.category_market_analysis()
-            for key in ("stocks", "fno", "bonds", "mutual-funds", "gold", "commodities", "currency"):
-                if snapshot.get(key):
-                    continue
-                item = fallback.get(key) or {}
-                rows = item.get("analyzed_options") or []
-                if rows:
-                    snapshot[key] = rows
-                    snapshot["_fallback"][key] = item.get("source") or "fallback source"
-        except Exception:
-            pass
-
-    # AMFI is used only as a second-stage fallback for mutual-fund history.
-    if not snapshot.get("mutual-funds"):
-        try:
-            from amfi_data import tracking_fund_universe
-            snapshot["mutual-funds"] = [
-                {"name": name, "source": "AMFI fallback"}
-                for name in tracking_fund_universe(100)
-            ]
-            snapshot["_fallback"]["mutual-funds"] = "AMFI fallback"
-        except Exception:
-            pass
 
     _SNAPSHOT = snapshot
     _SNAPSHOT_AT = now
@@ -539,18 +280,6 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     from market_universe import history_universe
     hu = history_universe()
 
-    # One database read for all cached mutual-fund histories; workers reuse it.
-    mf_cache = {}
-    try:
-        from database import mutual_fund_metrics
-        for row in mutual_fund_metrics():
-            if not any(row.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
-                continue
-            mf_cache[str(row.get("scheme_code", "")).strip()] = row
-            mf_cache[str(row.get("scheme_name", "")).strip().lower()] = row
-    except Exception:
-        pass
-
     history_jobs = {
         "stocks": (hu.get("stocks", [])[:TRACKING_LIMITS["stocks"]], "stocks", None),
         "bonds": (hu.get("bonds", [])[:TRACKING_LIMITS["bonds"]], "bonds", None),
@@ -562,7 +291,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
-            pool.submit(_history_for_rows, rows, category, limit, mf_cache): category
+            pool.submit(_history_for_rows, rows, category, limit): category
             for category, (rows, _, limit) in history_jobs.items()
         }
         fno_future = pool.submit(_history_for_fno_underlyings, fno, None)
@@ -673,8 +402,8 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "updated_at": now,
         },
         "mutual-funds": {
-            "status": "fallback" if "mutual-funds" in snapshot.get("_fallback", {}) else fund_data_status,
-            "source": snapshot.get("_fallback", {}).get("mutual-funds") or "Upstox mutual-fund instrument master; historical fallback only where needed",
+            "status": "upstox",
+            "source": "Upstox mutual-fund instrument master + historical candles",
             "metrics": fund_metrics,
             "analyzed_options": funds,
             "updated_at": now,
@@ -752,48 +481,13 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         and len(fds) >= 8
     )
     result["_tracking"]["message"] = (
-        "The full configured market universe is screened with Upstox first. "
-        "Fallback data is used only where Upstox does not expose the required field."
+        "The configured market universe is screened with Upstox market quotes "
+        "and Upstox historical candles. No public market-data provider is used."
     )
 
     _ANALYSIS = result
     _ANALYSIS_AT = now_ts
     return result
-
-
-def _fallback_market_cards(missing_labels):
-    """Targeted fallback only for cards that Upstox could not supply."""
-    out = {}
-    try:
-        import vercel_market
-        if any(label in missing_labels for label in ("NIFTY 50", "Gold", "USD/INR")):
-            for row in vercel_market.market_highlights():
-                if row.get("label") in missing_labels:
-                    item = dict(row)
-                    item["freshness"] = "fallback"
-                    out[item["label"]] = item
-
-        stock_symbols = {
-            "Reliance Industries": "RELIANCE.NS",
-            "HDFC Bank": "HDFCBANK.NS",
-            "TCS": "TCS.NS",
-            "Infosys": "INFY.NS",
-        }
-        for label, symbol in stock_symbols.items():
-            if label not in missing_labels:
-                continue
-            try:
-                row = vercel_market._quote(symbol, label)
-            except Exception:
-                row = None
-            if row:
-                row = dict(row)
-                row["kind"] = "equity"
-                row["freshness"] = "fallback"
-                out[label] = row
-    except Exception:
-        pass
-    return out
 
 
 _MARKET_HIGHLIGHTS = []
@@ -814,25 +508,19 @@ def _market_row(label, value, change, kind, unit=None, freshness="live", **extra
 
 
 def market_highlights() -> list[dict]:
-    """Return the homepage Market Now board without running the heavy history/comparison jobs."""
+    """Return the homepage Market Now board using Upstox only."""
     global _MARKET_HIGHLIGHTS, _MARKET_HIGHLIGHTS_AT
     now = datetime.now(timezone.utc).timestamp()
     if _MARKET_HIGHLIGHTS and now - _MARKET_HIGHLIGHTS_AT < _MARKET_HIGHLIGHTS_TTL:
         return _MARKET_HIGHLIGHTS
-
     try:
         items = market_now()
     except Exception:
         items = []
-
-    # Keep a small targeted fallback only if the primary board itself failed.
-    if not items:
-        fallbacks = _fallback_market_cards(["NIFTY 50", "Gold", "USD/INR"])
-        items = [fallbacks[k] for k in ("NIFTY 50", "Gold", "USD/INR") if k in fallbacks]
-
     _MARKET_HIGHLIGHTS = items
     _MARKET_HIGHLIGHTS_AT = now
     return items
+
 
 def market_snapshot() -> dict:
     analysis = category_market_analysis(allow_stale=True)
@@ -852,7 +540,7 @@ def market_snapshot() -> dict:
             for key, value in analysis.items()
             if key != "_tracking"
         ],
-        "message": "Upstox is the primary market-data source; other sources are used only where the required data is not exposed by Upstox.",
+        "message": "Upstox is the sole market-data source for FinanX market quotes and historical market analysis.",
     }
 
 

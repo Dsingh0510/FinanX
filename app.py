@@ -11,10 +11,8 @@ from flask import Flask, jsonify, render_template, request
 from allocation_engine import ASSET_INFO, build_portfolio
 from database import init_database
 from recommendation_engine import build_market_adjusted_plan
-import vercel_market
+import upstox_adapter
 import market_universe
-from amfi_data import update_amfi_metrics
-from database import mutual_fund_metrics
 
 app = Flask(__name__)
 init_database(app)
@@ -31,15 +29,10 @@ def _parse_amount(raw: str) -> float:
 
 
 def _engine():
-    # Upstox is optional at deploy time. When the token is present we use the
-    # Phase-1 NSE/BSE adapter; otherwise the existing public-data fallback stays usable.
-    try:
-        import upstox_adapter
-        if upstox_adapter.configured():
-            return upstox_adapter
-    except Exception:
-        pass
-    return vercel_market
+    """Return the single configured market-data engine used by FinanX."""
+    if not upstox_adapter.configured():
+        raise RuntimeError('UPSTOX_ANALYTICS_TOKEN is not configured.')
+    return upstox_adapter
 
 
 @app.get('/')
@@ -145,10 +138,7 @@ def analyze():
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
         engine = _engine()
-        if engine.__name__ == 'vercel_market':
-            market = engine.category_market_analysis()
-        else:
-            market = engine.category_market_analysis(allow_stale=True)
+        market = engine.category_market_analysis(allow_stale=True)
         tracking = market.get('_tracking') or {}
         if engine.__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
             return jsonify({
@@ -168,7 +158,7 @@ def analyze():
 def warm_market():
     try:
         engine = _engine()
-        market = engine.category_market_analysis() if engine.__name__ == 'vercel_market' else engine.category_market_analysis(force=True)
+        market = engine.category_market_analysis(force=True)
         return jsonify({
             'success': True,
             'ready': True,
@@ -190,9 +180,9 @@ def market():
 @app.get('/api/market/highlights')
 def market_highlights():
     try:
-        return jsonify({'items': vercel_market.market_highlights()})
-    except Exception:
-        return jsonify({'items': []})
+        return jsonify({'items': upstox_adapter.market_highlights()})
+    except Exception as exc:
+        return jsonify({'items': [], 'error': str(exc)}), 503
 
 @app.post('/api/market/refresh')
 def refresh_market():
@@ -213,7 +203,7 @@ def _compare_cached(segment, factory, ttl=900):
 @app.get('/api/market/compare/<segment>')
 def market_compare(segment: str):
     """Return live comparison tables. Upstox quotes are exchange snapshots;
-    AMFI supplies mutual-fund NAV/history; FD rates are labelled by source/date."""
+    Mutual-fund data comes from Upstox; FD rates remain separately labelled by source/date."""
     try:
         if segment == 'stocks':
             rows = _compare_cached('stocks', market_universe.compare_stocks)
@@ -222,15 +212,8 @@ def market_compare(segment: str):
             rows = _compare_cached('fno', market_universe.compare_fno)
             return jsonify({'segment':'fno','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
         if segment == 'funds':
-            refreshed = _compare_cached('funds-refresh', update_amfi_metrics, ttl=1800)
-            rows = mutual_fund_metrics()
-            deduped = {}
-            for row in rows:
-                if str(row.get('source','')).startswith('Bond proxy'): continue
-                code = str(row.get('scheme_code') or row.get('scheme_name') or '')
-                deduped[code] = row
-            rows = list(deduped.values())[:100]
-            return jsonify({'segment':'funds','count':len(rows),'source':'AMFI official NAV/history','refresh':refreshed,'items':rows})
+            rows = _compare_cached('funds', lambda: market_universe.compare_mutual_funds(100), ttl=1800)
+            return jsonify({'segment':'funds','count':len(rows),'source':'Upstox mutual-fund instrument master','items':rows})
         if segment == 'bonds':
             rows = _compare_cached('bonds', market_universe.compare_bonds)
             return jsonify({'segment':'bonds','count':len(rows),'source':'Upstox exchange quotes for listed bond/debt ETFs','items':rows})
@@ -245,17 +228,10 @@ def market_compare(segment: str):
 def tracking():
     """Expose the backend tracking universe and live quote coverage."""
     try:
-        import os as _os
         from market_universe import tracking_universe, compare_stocks, compare_fno, compare_bonds, compare_fds, compare_mutual_funds
 
         catalog = tracking_universe()
         fund_names = [x.get('name') for x in compare_mutual_funds(100) if x.get('name')]
-        if not fund_names:
-            try:
-                from amfi_data import tracking_fund_universe
-                fund_names = tracking_fund_universe(100)
-            except Exception:
-                fund_names = []
         fd_rows = compare_fds()
         try:
             import upstox_adapter as _market_adapter
@@ -293,10 +269,10 @@ def tracking():
             'gold': ('gold', 5, 'Upstox MCX gold contracts'),
         }
         configs = {
-            'stocks': ('stocks', 30, 'Top tracked equity market quotes'),
-            'fno': ('fno', 30, 'Top tracked derivatives market quotes'),
-            'mutual-funds': ('mutual-funds', 30, 'Tracked mutual-fund scheme master'),
-            'bonds': ('bonds', 20, 'Tracked listed bond/debt market quotes'),
+            'stocks': ('stocks', 30, 'Upstox tracked equity quotes'),
+            'fno': ('fno', 30, 'Upstox tracked derivatives quotes'),
+            'mutual-funds': ('mutual-funds', 30, 'Upstox mutual-fund scheme master'),
+            'bonds': ('bonds', 20, 'Upstox listed bond/debt quotes'),
             'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
             **live_segments,
         }
@@ -371,7 +347,7 @@ def health():
         'status': 'ok',
         'time': datetime.now(timezone.utc).isoformat(),
         'runtime': 'vercel-flask',
-        'market_engine': 'upstox-live-universe-with-public-fallback',
+        'market_engine': 'upstox-primary',
         'upstox': upstox,
     })
 

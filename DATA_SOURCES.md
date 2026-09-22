@@ -1,32 +1,19 @@
-# FinanX data-source plan
+# FinanX Data Sources
 
-## Live / near-live market segments
-- **Stocks / indices:** Upstox V3 LTP or WebSocket feed; NSE also provides authorized real-time market-data products.
-- **F&O:** Upstox V3 LTP / WebSocket; option-chain and Greeks can be added later.
-- **Gold / commodities:** use a configured MCX-enabled instrument key through an authorized provider.
-- **Currency:** use a configured NSE/BSE currency-derivative instrument key through an authorized provider.
-- **Bonds:** use a specific supported bond-data feed; do not label a static bond yield table as real-time.
+## Primary market-data source
 
-## Daily / rate data
-- **Mutual Funds:** AMFI daily NAV file.
-- **FD:** bank-published rate tables; refresh when banks publish a change.
-- **Government bond yields:** RBI/FBIL publications can provide yield/reference information at their published cadence.
+**Upstox API V3 and Upstox instrument data**
 
-## Analysis metrics
-For live market-traded categories FinanX calculates:
-- Current LTP
-- Previous close and 1-day change
-- 30-day and 90-day returns
-- 1-year return when sufficient history is available
-- Annualized volatility from daily log returns
-- Maximum drawdown
+FinanX uses Upstox for equity/index quotes, F&O, MCX commodities, currency futures, listed bonds/debt, mutual-fund instrument metadata and historical market candles. Upstox V3 provides full market quotes and historical candle data for supported instruments. citeturn494833search5turn494833search1
 
-## Recommendation logic
-1. Build user-fit score from risk comfort, horizon, liquidity and goal.
-2. Blend in current market-condition score only when reliable market data exists.
-3. Apply hard caps to derivatives and other high-risk categories.
-4. Produce a ranked **category scenario**, not a guaranteed-return forecast.
-5. Show data freshness and source next to the analysis.
+## FD reference
 
-## Important rule
-Never display a demo/cached value as real-time. If a feed is missing, the UI must show `NOT CONNECTED` or the appropriate freshness label.
+Bank FD rates remain a separate **official-bank rate registry** because deposit rates are not exchange-market quotes exposed by the Upstox market-data APIs used by FinanX.
+
+## Market Performance
+
+For each tracked segment FinanX loads Upstox historical monthly candles, calculates 1Y/3Y/5Y metrics where possible, and averages the valid tracked entities. History coverage is reported instead of inventing missing values.
+
+## Data integrity
+
+Yahoo Finance, MFAPI and AMFI are not used as hidden market-data fallbacks.
