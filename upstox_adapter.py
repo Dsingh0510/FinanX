@@ -710,18 +710,117 @@ def _fallback_market_cards(missing_labels):
     return out
 
 
-def market_highlights() -> list[dict]:
-    try:
-        items = market_now()
-    except Exception:
-        items = []
+_MARKET_HIGHLIGHTS = []
+_MARKET_HIGHLIGHTS_AT = 0.0
+_MARKET_HIGHLIGHTS_TTL = 45
 
-    have = {x.get("label") for x in items if x.get("label")}
-    missing_core = [x for x in ("NIFTY 50", "Gold", "USD/INR") if x not in have]
+
+def _market_row(label, value, change, kind, unit=None, freshness="live", **extra):
+    return {
+        "label": label,
+        "value": value,
+        "today_change": change,
+        "kind": kind,
+        "unit": unit,
+        "freshness": freshness,
+        **extra,
+    }
+
+
+def market_highlights() -> list[dict]:
+    """Build a broad Market Now feed from parallel Upstox quote queries."""
+    global _MARKET_HIGHLIGHTS, _MARKET_HIGHLIGHTS_AT
+    now = datetime.now(timezone.utc).timestamp()
+    if _MARKET_HIGHLIGHTS and now - _MARKET_HIGHLIGHTS_AT < _MARKET_HIGHLIGHTS_TTL:
+        return _MARKET_HIGHLIGHTS
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {
+            pool.submit(market_now): "core",
+            pool.submit(compare_stocks): "stocks",
+            pool.submit(compare_commodities): "commodities",
+            pool.submit(compare_currency): "currency",
+            pool.submit(compare_bonds): "bonds",
+        }
+        results = {}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result() or []
+            except Exception:
+                results[key] = []
+
+    items = []
+    seen = set()
+
+    def add(item):
+        label = str(item.get("label") or item.get("name") or item.get("symbol") or "").strip()
+        if not label or label in seen:
+            return
+        seen.add(label)
+        items.append(item)
+
+    # Preserve the key cards first.
+    for row in results.get("core", []):
+        add(row)
+
+    # Add live stock entities.
+    for row in sorted(results.get("stocks", []), key=lambda x: x.get("rank", 999))[:6]:
+        add(_market_row(
+            row.get("name") or row.get("symbol"),
+            row.get("price"),
+            row.get("today_change"),
+            "equity",
+            freshness="live",
+            instrument_key=row.get("instrument_key"),
+        ))
+
+    # Add multiple commodity entities.
+    for row in results.get("commodities", [])[:6]:
+        add(_market_row(
+            row.get("name") or row.get("symbol"),
+            row.get("price"),
+            row.get("today_change"),
+            "commodity",
+            freshness="live",
+            instrument_key=row.get("instrument_key"),
+        ))
+
+    # Add multiple currency entities.
+    for row in results.get("currency", [])[:6]:
+        add(_market_row(
+            row.get("name") or row.get("symbol"),
+            row.get("price"),
+            row.get("today_change"),
+            "currency",
+            freshness="live",
+            instrument_key=row.get("instrument_key"),
+        ))
+
+    # Add multiple listed bond/debt entities.
+    for row in results.get("bonds", [])[:6]:
+        add(_market_row(
+            row.get("name") or row.get("symbol") or "Listed Bond",
+            row.get("price"),
+            row.get("today_change"),
+            "bond",
+            freshness="live",
+            instrument_key=row.get("instrument_key"),
+        ))
+
+    # Targeted fallbacks only for missing core cards.
+    core_labels = {"NIFTY 50", "Gold", "USD/INR"}
+    missing_core = [x for x in core_labels if x not in seen]
     if missing_core:
         fallbacks = _fallback_market_cards(missing_core)
-        items.extend(fallbacks[label] for label in missing_core if label in fallbacks)
+        for label in missing_core:
+            if label in fallbacks:
+                add(fallbacks[label])
 
+    _MARKET_HIGHLIGHTS = items
+    _MARKET_HIGHLIGHTS_AT = now
     return items
 
 def market_snapshot() -> dict:
