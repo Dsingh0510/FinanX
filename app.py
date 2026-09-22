@@ -77,7 +77,7 @@ def analyze():
         liquidity = str(p.get('liquidity', 'medium')).lower()
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
-        market = _engine().category_market_analysis()
+        market = _engine().category_market_analysis(allow_stale=True)
         tracking = market.get('_tracking') or {}
         if _engine().__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
             return jsonify({
@@ -91,6 +91,20 @@ def analyze():
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': f'Analysis service error: {exc}'}), 500
+
+
+@app.post('/api/market/warm')
+def warm_market():
+    try:
+        market = _engine().category_market_analysis(force=True)
+        return jsonify({
+            'success': True,
+            'ready': True,
+            'generated_at': market.get('stocks', {}).get('updated_at'),
+            'tracking': market.get('_tracking') or {},
+        })
+    except Exception as exc:
+        return jsonify({'success': False, 'ready': False, 'error': str(exc)}), 500
 
 
 @app.get('/api/market')
