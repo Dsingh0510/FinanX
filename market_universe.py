@@ -212,6 +212,7 @@ def compare_fno():
             "symbol": row.get("trading_symbol"),
             "type": row.get("instrument_type"),
             "underlying": row.get("underlying_symbol"),
+            "underlying_key": row.get("underlying_key"),
             "expiry": row.get("expiry"),
             "strike": row.get("strike_price") if row.get("instrument_type") in ("CE", "PE") else None,
             "lot_size": row.get("lot_size"),
@@ -330,7 +331,7 @@ def compare_gold():
 
 
 def compare_currency():
-    rows = _active_rows({"NCD_FO", "BCD_FO"}, {"FUT"})
+    rows = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
     rows = [r for r in rows if r.get("underlying_type") == "CUR"]
     quotes = _quotes([_instrument_key(r) for r in rows[:150]])
     output = []
@@ -361,77 +362,76 @@ def compare_currency():
 
 
 def compare_mutual_funds(limit=100):
-    """Return a broad Upstox MF universe using the official MF instrument master."""
+    """Return an Upstox mutual-fund universe, preferring investable direct-growth schemes."""
     raw = mutual_fund_instruments()
-    if isinstance(raw, dict):
-        rows = raw.get("data") or raw.get("instruments") or []
-    else:
-        rows = raw or []
 
-    # Do not require purchase_allowed/plan/dividend fields: the Upstox MF
-    # instrument master can omit those fields for some valid schemes.
+    if isinstance(raw, list):
+        rows = raw
+    elif isinstance(raw, dict):
+        rows = raw.get("data") or raw.get("instruments") or raw.get("mutual_funds") or []
+        if not isinstance(rows, list):
+            # Some instrument files may wrap records one level deeper.
+            rows = [item for value in raw.values() if isinstance(value, list) for item in value]
+    else:
+        rows = []
+
     candidates = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         key = _instrument_key(row)
         name = str(row.get("name") or row.get("scheme_name") or "").strip()
-        nav = row.get("last_price")
         if not key or not name:
             continue
+        if row.get("purchase_allowed") is False:
+            continue
+
+        text = " ".join(
+            str(row.get(k, "")) for k in ("name", "scheme_name", "plan", "dividend_type", "scheme_type")
+        ).upper()
+        direct = "DIRECT" in text or str(row.get("plan", "")).upper() == "DIRECT"
+        growth = "GROWTH" in text or "GROWTH" in str(row.get("dividend_type", "")).upper()
+
         try:
-            nav_value = float(nav) if nav is not None else None
+            nav = float(row.get("last_price")) if row.get("last_price") is not None else None
         except (TypeError, ValueError):
-            nav_value = None
-        candidates.append({
-            "_row": row,
-            "instrument_key": key,
-            "name": name,
-            "latest_nav": nav_value,
-            "latest_date": row.get("last_price_date"),
-            "scheme_type": row.get("scheme_type"),
-            "plan": row.get("plan"),
-            "dividend_type": row.get("dividend_type"),
-        })
+            nav = None
 
-    def rank(item):
-        row = item["_row"]
-        text = " ".join(str(row.get(k, "")) for k in ("scheme_type", "name", "short_name")).upper()
-        score = 0
-        for term in ("EQUITY", "HYBRID", "DEBT", "ELSS", "INDEX"):
-            if term in text:
-                score += 3
-        if "DIRECT" in text:
-            score += 2
-        if "GROWTH" in text:
-            score += 2
-        if item["latest_nav"] is not None:
-            score += 1
-        return score
+        quality = (
+            100
+            if direct and growth
+            else 80 if direct
+            else 60 if growth
+            else 40
+        )
+        quality += 5 if nav is not None else 0
+        candidates.append((quality, row, key, name, nav))
 
-    candidates.sort(key=lambda x: (rank(x), x["latest_nav"] is not None), reverse=True)
+    # Direct-growth first; then other valid Upstox MF instruments as a safety net.
+    candidates.sort(key=lambda x: (-x[0], x[3].upper()))
 
     output = []
     seen = set()
-    for item in candidates:
-        key = item["instrument_key"]
+    for _, row, key, name, nav in candidates:
         if key in seen:
             continue
         seen.add(key)
         output.append({
-            "name": item["name"],
-            "scheme_code": item["_row"].get("scheme_code") or item["_row"].get("schemeCode") or key,
+            "name": name,
+            "scheme_code": row.get("scheme_code") or row.get("schemeCode") or key,
             "symbol": key,
             "instrument_key": key,
-            "latest_nav": item["latest_nav"],
-            "latest_date": item["latest_date"],
-            "scheme_type": item["scheme_type"],
-            "plan": item["plan"],
-            "dividend_type": item["dividend_type"],
+            "latest_nav": nav,
+            "latest_date": row.get("last_price_date"),
+            "scheme_type": row.get("scheme_type"),
+            "plan": row.get("plan"),
+            "dividend_type": row.get("dividend_type"),
+            "minimum_purchase_amount": row.get("minimum_purchase_amount"),
             "source": "Upstox mutual-fund instrument master",
         })
         if len(output) >= limit:
             break
     return output
-
 
 
 def compare_fds():
