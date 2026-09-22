@@ -581,10 +581,18 @@ def compare_bonds():
 
 
 def compare_commodities():
-    rows = _active_rows({"MCX_FO"}, {"FUT"})
-    quotes = _quotes([_instrument_key(r) for r in rows[:TRACKING_LIMITS["commodities"]]])
+    rows = [
+        row for row in _active_rows({"MCX_FO"}, {"FUT"})
+        if "GOLD" not in (
+            str(row.get("underlying_symbol", "")).upper()
+            + " " + str(row.get("name", "")).upper()
+            + " " + str(row.get("trading_symbol", "")).upper()
+        )
+    ]
+    rows = _unique_underlying_rows(rows, TRACKING_LIMITS["commodities"])
+    quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
-    for row in rows[:TRACKING_LIMITS["commodities"]]:
+    for row in rows:
         key = _instrument_key(row)
         q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
@@ -645,9 +653,10 @@ def compare_gold():
 def compare_currency():
     rows = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
     rows = [r for r in rows if r.get("underlying_type") == "CUR"]
-    quotes = _quotes([_instrument_key(r) for r in rows[:TRACKING_LIMITS["currency"]]])
+    rows = _unique_underlying_rows(rows, TRACKING_LIMITS["currency"])
+    quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
-    for row in rows[:TRACKING_LIMITS["currency"]]:
+    for row in rows:
         key = _instrument_key(row)
         q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
