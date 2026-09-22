@@ -515,17 +515,18 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
         sample_size = int((row.get('metrics') or {}).get('sample_size') or 0)
 
         if row['category'] == 'mutual-funds' and sample_size:
-            basis = f'AMFI average • {sample_size} funds'
+            basis = f'AMFI history • {sample_size} funds'
         elif row['category'] == 'bonds' and sample_size:
             cy = (row.get('metrics') or {}).get('current_yield')
-            basis = f'Bond fund proxy • {sample_size} funds' + (f' • 10Y yield {float(cy):.2f}%' if cy is not None else '')
+            basis = f'Bond data • {sample_size} tracked' + (f' • 10Y yield {float(cy):.2f}%' if cy is not None else '')
         elif row['category'] == 'fd' and sample_size:
-            basis = f'Rate average • {sample_size} entries'
-        elif sample_size > 1:
-            basis = f'Average • {sample_size} tracked'
+            basis = f'Official rate table • {sample_size} entries'
+        elif row.get('data_status') == 'fallback':
+            basis = 'Fallback market history'
+        elif (row.get('metrics') or {}).get('available'):
+            basis = 'Upstox market history'
         else:
-            cy = (row.get('metrics') or {}).get('current_yield') if row['category'] == 'bonds' else None
-            basis = f'10Y G-Sec yield {float(cy):.2f}%' if cy is not None else p['basis']
+            basis = 'History unavailable • planning rate used for projection'
 
         ranked_options = _rank_entity_options(row['category'], market_analysis.get(row['category'], {}), risk, horizon, goal)
         ranked.append({
