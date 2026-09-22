@@ -67,6 +67,33 @@ def plan():
         return jsonify({'error': f'Planner service error: {exc}'}), 500
 
 
+@app.post('/api/analyze/fast')
+def analyze_fast():
+    """Return a quick provisional plan so the UI can respond immediately.
+    The full tracked-universe analysis is refreshed separately and can replace
+    this result once the background cache is warm.
+    """
+    try:
+        p = request.get_json(force=True)
+        amount = _parse_amount(str(p.get('amount', '0')))
+        horizon = int(p.get('horizon', 5))
+        risk = str(p.get('risk', 'moderate')).lower()
+        liquidity = str(p.get('liquidity', 'medium')).lower()
+        goal = str(p.get('goal', 'balanced_growth')).lower()
+        emergency = str(p.get('emergency', 'yes')).lower()
+
+        import vercel_market
+        market = vercel_market.category_market_analysis()
+        result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
+        result['provisional'] = True
+        result['data_note'] = 'Quick plan shown while the full tracked-universe market analysis refreshes in the background.'
+        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'market': market, **result})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': f'Fast analysis service error: {exc}'}), 500
+
+
 @app.post('/api/analyze')
 def analyze():
     try:
