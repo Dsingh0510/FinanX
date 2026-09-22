@@ -312,17 +312,15 @@ def _load_live_universe() -> dict:
             except Exception:
                 snapshot[key] = []
 
-    # Enrich Upstox mutual-fund rows with cached historical NAV returns.
-    # Upstox remains primary for the live fund universe/latest NAV; AMFI is used
-    # only for historical-return fields that Upstox's MF instrument master does
-    # not expose.
+    # Upstox is primary for the live MF universe/latest NAV. AMFI supplies
+    # the historical NAV anchors for the same tracked 100-fund universe.
     if snapshot.get("mutual-funds"):
         try:
             from database import mutual_fund_metrics
+            from amfi_data import update_amfi_metrics
             cached = mutual_fund_metrics()
-            if not cached:
-                from amfi_data import update_amfi_metrics_fast
-                update_amfi_metrics_fast()
+            if len(cached) < 80:
+                update_amfi_metrics()
                 cached = mutual_fund_metrics()
             by_name = {
                 str(x.get("scheme_name", "")).strip().lower(): x
@@ -330,13 +328,12 @@ def _load_live_universe() -> dict:
                 if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
             }
             for row in snapshot["mutual-funds"]:
-                key = str(row.get("name", "")).strip().lower()
-                hist = by_name.get(key)
+                hist = by_name.get(str(row.get("name", "")).strip().lower())
                 if hist:
                     row["return_1y"] = hist.get("return_1y")
                     row["return_3y"] = hist.get("return_3y")
                     row["return_5y"] = hist.get("return_5y")
-                    row["history_source"] = hist.get("source") or "AMFI cached history"
+                    row["history_source"] = hist.get("source") or "AMFI history"
         except Exception:
             pass
 
@@ -393,15 +390,15 @@ def category_market_analysis() -> dict:
     commodities = snapshot.get("commodities", [])[:50]
     currency = snapshot.get("currency", [])[:50]
 
-    # Historical requests are parallel and limited to the shortlist. Live
-    # quotes already screened the complete universe.
+    # Calculate segment averages across the complete tracked universe.
+    from market_universe import history_universe
+    hu = history_universe()
     history_jobs = {
-        "stocks": (stocks, "stocks", 12),
-        "bonds": (bonds, "bonds", 8),
-        "mutual-funds": (funds, "mutual-funds", 12),
-        "gold": (gold, "gold", 2),
-        "commodities": (commodities, "commodities", 3),
-        "currency": (currency, "currency", 3),
+        "stocks": (hu.get("stocks", [])[:100], "stocks", None),
+        "bonds": (hu.get("bonds", [])[:50], "bonds", None),
+        "mutual-funds": (hu.get("mutual-funds", [])[:100], "mutual-funds", None),
+        "commodities": (hu.get("commodities", [])[:50], "commodities", None),
+        "currency": (hu.get("currency", [])[:50], "currency", None),
     }
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -409,7 +406,7 @@ def category_market_analysis() -> dict:
             pool.submit(_history_for_rows, rows, category, limit): category
             for category, (rows, _, limit) in history_jobs.items()
         }
-        fno_future = pool.submit(_history_for_fno_underlyings, fno, 6)
+        fno_future = pool.submit(_history_for_fno_underlyings, fno, None)
         for future in as_completed([*futures.keys(), fno_future]):
             if future is fno_future:
                 try:
@@ -459,7 +456,7 @@ def category_market_analysis() -> dict:
     dec = sum(1 for x in live_changes if x < 0)
     breadth = round(50 + ((adv - dec) / len(live_changes)) * 50, 1) if live_changes else None
 
-    stock_metrics = _category_metrics(stocks, 20.0)
+    stock_metrics = _category_metrics(history_results.get("stocks", []), 20.0)
     stock_metrics.update({
         "live_sample_size": len(snapshot.get("stocks", [])),
         "advancers": adv,
@@ -467,7 +464,7 @@ def category_market_analysis() -> dict:
         "live_breadth_score": breadth,
     })
 
-    fund_metrics = _category_metrics(funds, 14.0)
+    fund_metrics = _category_metrics(history_results.get("mutual-funds", []), 14.0)
     fund_data_status = "upstox"
     if not fund_metrics.get("available"):
         try:
@@ -488,8 +485,10 @@ def category_market_analysis() -> dict:
         except Exception:
             pass
 
-    bond_metrics = _category_metrics(bonds, 7.0)
-    fno_metrics = _category_metrics(fno, 45.0)
+    bond_metrics = _category_metrics(history_results.get("bonds", []), 7.0)
+    commodity_metrics = _category_metrics(history_results.get("commodities", []), 25.0)
+    currency_metrics = _category_metrics(history_results.get("currency", []), 12.0)
+    fno_metrics = _category_metrics(list(fno_underlyings.values()), 45.0)
     if fno_metrics.get("available"):
         fno_data_status = "upstox-underlying-history"
     else:
@@ -513,8 +512,6 @@ def category_market_analysis() -> dict:
         except Exception:
             pass
     gold_metrics = _category_metrics(gold, 16.0)
-    commodity_metrics = _category_metrics(commodities, 25.0)
-    currency_metrics = _category_metrics(currency, 12.0)
 
     # If Upstox historical candles are unavailable for a segment, use a
     # targeted public-data fallback for that segment only. This keeps Upstox
