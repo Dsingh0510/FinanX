@@ -438,6 +438,36 @@ def category_market_analysis() -> dict:
     commodity_metrics = _category_metrics(commodities, 25.0)
     currency_metrics = _category_metrics(currency, 12.0)
 
+    # If Upstox historical candles are unavailable for a segment, use a
+    # targeted public-data fallback for that segment only. This keeps Upstox
+    # primary while avoiding fake baseline return numbers in the UI.
+    fallback_analysis = {}
+    try:
+        import vercel_market
+        fallback_analysis = vercel_market.category_market_analysis()
+    except Exception:
+        fallback_analysis = {}
+
+    def enrich_with_fallback(category, metrics):
+        if metrics.get("available"):
+            return metrics, "upstox"
+        fb = fallback_analysis.get(category) or {}
+        fbm = fb.get("metrics") or {}
+        if fbm.get("available") and any(fbm.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
+            merged = dict(metrics)
+            for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized"):
+                if fbm.get(key) is not None:
+                    merged[key] = fbm.get(key)
+            merged["available"] = True
+            merged["sample_size"] = fbm.get("sample_size") or metrics.get("sample_size", 0)
+            return merged, "fallback"
+        return metrics, "upstox"
+
+    stock_metrics, stock_data_status = enrich_with_fallback("stocks", stock_metrics)
+    gold_metrics, gold_data_status = enrich_with_fallback("gold", gold_metrics)
+    commodity_metrics, commodity_data_status = enrich_with_fallback("commodities", commodity_metrics)
+    currency_metrics, currency_data_status = enrich_with_fallback("currency", currency_metrics)
+
     fd_values = [float(x["rate"]) for x in fds if x.get("rate") is not None]
     fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
     fd_metrics = {
@@ -473,21 +503,21 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "gold": {
-            "status": "fallback" if "gold" in snapshot.get("_fallback", {}) else "upstox",
+            "status": gold_data_status if "gold" not in snapshot.get("_fallback", {}) else "fallback",
             "source": snapshot.get("_fallback", {}).get("gold") or "Upstox MCX gold contracts",
             "metrics": gold_metrics,
             "analyzed_options": gold,
             "updated_at": now,
         },
         "commodities": {
-            "status": "fallback" if "commodities" in snapshot.get("_fallback", {}) else "upstox",
+            "status": commodity_data_status if "commodities" not in snapshot.get("_fallback", {}) else "fallback",
             "source": snapshot.get("_fallback", {}).get("commodities") or "Upstox MCX commodity contracts",
             "metrics": commodity_metrics,
             "analyzed_options": commodities,
             "updated_at": now,
         },
         "currency": {
-            "status": "fallback" if "currency" in snapshot.get("_fallback", {}) else "upstox",
+            "status": currency_data_status if "currency" not in snapshot.get("_fallback", {}) else "fallback",
             "source": snapshot.get("_fallback", {}).get("currency") or "Upstox currency futures",
             "metrics": currency_metrics,
             "analyzed_options": currency,
@@ -509,7 +539,7 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "stocks": {
-            "status": "fallback" if "stocks" in snapshot.get("_fallback", {}) else "upstox",
+            "status": stock_data_status if "stocks" not in snapshot.get("_fallback", {}) else "fallback",
             "source": snapshot.get("_fallback", {}).get("stocks") or "Upstox full market quotes + historical candles",
             "metrics": stock_metrics,
             "analyzed_options": stocks,
