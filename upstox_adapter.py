@@ -218,27 +218,87 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
     return out
 
 
+def _history_for_segment_entities(rows: list[dict], limit: int | None = None) -> dict:
+    """Return one real historical result per unique segment entity.
+
+    Derivative contracts can expire, so use the stable underlying first when
+    Upstox provides an underlying_key. If that history is unavailable, fall
+    back to the tracked contract key for the same entity.
+    """
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        entity_key = row.get("underlying_key") or row.get("instrument_key") or row.get("symbol")
+        if not entity_key:
+            continue
+        groups.setdefault(str(entity_key), []).append(row)
+
+    ordered = sorted(
+        groups.items(),
+        key=lambda item: max(
+            (row.get("volume") or row.get("oi") or 0) for row in item[1]
+        ),
+        reverse=True,
+    )
+    if limit is not None:
+        ordered = ordered[:limit]
+
+    def work(entity_key: str, entity_rows: list[dict]):
+        representative = dict(entity_rows[0])
+        history_candidates: list[tuple[str, str]] = []
+        underlying_key = representative.get("underlying_key")
+        if underlying_key and str(underlying_key) == entity_key:
+            history_candidates.append((entity_key, "Underlying market history (Upstox)"))
+
+        seen_keys = {key for key, _ in history_candidates}
+        for row in sorted(
+            entity_rows,
+            key=lambda item: (
+                -(item.get("volume") or item.get("oi") or 0),
+                item.get("_expiry_ms") or 0,
+            ),
+        ):
+            key = row.get("instrument_key") or row.get("symbol")
+            if not key or str(key) in seen_keys:
+                continue
+            history_candidates.append((str(key), "Upstox historical candles"))
+            seen_keys.add(str(key))
+
+        for history_key, source in history_candidates:
+            try:
+                with _HISTORY_GATE:
+                    metrics = _metrics(_series(history_key, unit="months"))
+                if metrics.get("available"):
+                    item = dict(representative)
+                    item["instrument_key"] = entity_key
+                    item["entity_key"] = entity_key
+                    item.update(metrics)
+                    item["history_source"] = source
+                    item["history_instrument_key"] = history_key
+                    return entity_key, item
+            except Exception:
+                continue
+
+        return entity_key, None
+
+    result = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(ordered) or 1)) as pool:
+        futures = [
+            pool.submit(work, entity_key, entity_rows)
+            for entity_key, entity_rows in ordered
+        ]
+        for future in as_completed(futures):
+            try:
+                entity_key, item = future.result()
+                if item is not None:
+                    result[entity_key] = item
+            except Exception:
+                pass
+    return result
+
+
 def _history_for_fno_underlyings(rows: list[dict], limit: int | None = None) -> dict:
     """Average history of the unique underlyings represented by tracked F&O contracts."""
-    unique = {}
-    for row in rows:
-        key = row.get("underlying_key")
-        if key and key not in unique:
-            unique[key] = {
-                "instrument_key": key,
-                "symbol": row.get("underlying"),
-                "name": row.get("underlying") or row.get("name") or key,
-                "volume": row.get("volume") or row.get("oi") or 0,
-            }
-    shortlisted = sorted(unique.values(), key=lambda x: x.get("volume") or 0, reverse=True)
-    if limit is not None:
-        shortlisted = shortlisted[:limit]
-    history = _history_for_rows(shortlisted, "stocks", None)
-    return {
-        str(row.get("instrument_key")): row
-        for row in history
-        if row.get("instrument_key")
-    }
+    return _history_for_segment_entities(rows, limit)
 
 
 def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int | None = None) -> dict:
@@ -340,15 +400,21 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         "stocks": (hu.get("stocks", [])[:TRACKING_LIMITS["stocks"]], "stocks", None),
         "bonds": (hu.get("bonds", [])[:TRACKING_LIMITS["bonds"]], "bonds", None),
         "mutual-funds": (hu.get("mutual-funds", [])[:TRACKING_LIMITS["mutual-funds"]], "mutual-funds", None),
-        "gold": (hu.get("gold", [])[:TRACKING_LIMITS["gold"]], "gold", None),
-        "commodities": (hu.get("commodities", [])[:TRACKING_LIMITS["commodities"]], "commodities", None),
-        "currency": (hu.get("currency", [])[:TRACKING_LIMITS["currency"]], "currency", None),
+        "gold": (hu.get("gold", []), "entities", TRACKING_LIMITS["gold"]),
+        "commodities": (hu.get("commodities", []), "entities", TRACKING_LIMITS["commodities"]),
+        "currency": (hu.get("currency", []), "entities", TRACKING_LIMITS["currency"]),
     }
+
+    def load_history(rows, category, limit):
+        if category == "entities":
+            return _history_for_segment_entities(rows, limit)
+        return _history_for_rows(rows, category, limit)
+
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
-            pool.submit(_history_for_rows, rows, category, limit): category
-            for category, (rows, _, limit) in history_jobs.items()
+            pool.submit(load_history, rows, category, limit): key
+            for key, (rows, category, limit) in history_jobs.items()
         }
         fno_future = pool.submit(
             _history_for_fno_underlyings,
@@ -366,7 +432,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             try:
                 history_results[category] = future.result()
             except Exception:
-                history_results[category] = []
+                history_results[category] = {} if history_jobs[category][1] == "entities" else []
 
     def merge(rows, history):
         by_key = {}
@@ -395,9 +461,41 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     fno = enriched_fno
     bonds = merge(bonds, history_results.get("bonds", []))
     funds = merge(funds, history_results.get("mutual-funds", []))
-    gold = merge(gold, history_results.get("gold", []))
-    commodities = merge(commodities, history_results.get("commodities", []))
-    currency = merge(currency, history_results.get("currency", []))
+
+    def enrich_entity_rows(rows, history_by_entity):
+        output = []
+        for row in rows:
+            entity_key = str(
+                row.get("underlying_key")
+                or row.get("instrument_key")
+                or row.get("symbol")
+                or row.get("name")
+            )
+            item = dict(row)
+            hist = history_by_entity.get(entity_key) if isinstance(history_by_entity, dict) else None
+            if hist:
+                for metric_key in (
+                    "return_1y",
+                    "return_3y",
+                    "return_5y",
+                    "volatility_annualized",
+                    "max_drawdown",
+                ):
+                    if hist.get(metric_key) is not None:
+                        item[metric_key] = hist.get(metric_key)
+                item["history_source"] = hist.get("history_source")
+                item["history_instrument_key"] = hist.get("history_instrument_key")
+                item["entity_key"] = entity_key
+            output.append(item)
+        return output
+
+    gold_history = history_results.get("gold", {})
+    commodity_history = history_results.get("commodities", {})
+    currency_history = history_results.get("currency", {})
+
+    gold = enrich_entity_rows(gold, gold_history)
+    commodities = enrich_entity_rows(commodities, commodity_history)
+    currency = enrich_entity_rows(currency, currency_history)
 
     live_changes = [float(x["today_change"]) for x in stocks if x.get("today_change") is not None]
     adv = sum(1 for x in live_changes if x > 0)
@@ -429,12 +527,12 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         tracked_count=len(hu.get("bonds", [])),
     )
     commodity_metrics = _category_metrics(
-        history_results.get("commodities", []),
+        list(commodity_history.values()),
         25.0,
         tracked_count=len(hu.get("commodities", [])),
     )
     currency_metrics = _category_metrics(
-        history_results.get("currency", []),
+        list(currency_history.values()),
         12.0,
         tracked_count=len(hu.get("currency", [])),
     )
@@ -453,7 +551,11 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     else:
         fno_data_status = "upstox"
     bond_data_status = "upstox"
-    gold_metrics = _category_metrics(history_results.get("gold", []), 16.0)
+    gold_metrics = _category_metrics(
+        list(gold_history.values()),
+        16.0,
+        tracked_count=len(hu.get("gold", [])),
+    )
 
     # Market-analysis return values are never substituted with a
     # representative symbol or model proxy. They remain the exact averages
