@@ -380,9 +380,10 @@ def category_market_analysis() -> dict:
 
     # Historical requests are parallel and limited to the shortlist. Live
     # quotes already screened the complete universe.
+    fno_history = [x for x in fno if x.get("type") == "FUT"]
     history_jobs = {
         "stocks": (stocks, "stocks", 12),
-        "fno": (fno, "fno", 10),
+        "fno": (fno_history, "fno", 10),
         "bonds": (bonds, "bonds", 8),
         "mutual-funds": (funds, "mutual-funds", 12),
         "gold": (gold, "gold", 2),
@@ -414,7 +415,8 @@ def category_market_analysis() -> dict:
         return output
 
     stocks = merge(stocks, history_results.get("stocks", []))
-    fno = merge(fno, history_results.get("fno", []))
+    fno_history_map = {str(x.get("instrument_key") or x.get("symbol") or x.get("name")): x for x in history_results.get("fno", [])}
+    fno = [dict(fno_history_map.get(str(x.get("instrument_key") or x.get("symbol") or x.get("name"))) or x) for x in fno]
     bonds = merge(bonds, history_results.get("bonds", []))
     funds = merge(funds, history_results.get("mutual-funds", []))
     gold = merge(gold, history_results.get("gold", []))
