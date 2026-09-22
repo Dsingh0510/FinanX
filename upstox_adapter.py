@@ -307,7 +307,21 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
 
     # Calculate segment averages across the complete tracked universe.
     from market_universe import history_universe
-    hu = history_universe()
+    history_universe_error = None
+    try:
+        hu = history_universe()
+    except Exception as exc:
+        history_universe_error = str(exc)
+        logger.exception("History-universe discovery failed; using live snapshot rows")
+        hu = {
+            "stocks": stocks,
+            "bonds": bonds,
+            "mutual-funds": funds,
+            "gold": gold,
+            "commodities": commodities,
+            "currency": currency,
+            "fno": fno,
+        }
 
     history_jobs = {
         "stocks": (hu.get("stocks", [])[:TRACKING_LIMITS["stocks"]], "stocks", None),
@@ -488,6 +502,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         configured = {"stocks": [], "fno": [], "bonds": []}
 
     result["_tracking"] = {
+        "history_universe_error": history_universe_error,
         "stocks_requested": TRACKING_LIMITS["stocks"],
         "stocks_tracked": len(stocks),
         "fno_requested": TRACKING_LIMITS["fno"],
