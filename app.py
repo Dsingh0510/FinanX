@@ -165,6 +165,12 @@ def tracking():
 
         catalog = tracking_universe()
         fund_names = [x.get('name') for x in compare_mutual_funds(100) if x.get('name')]
+        if not fund_names:
+            try:
+                from amfi_data import tracking_fund_universe
+                fund_names = tracking_fund_universe(100)
+            except Exception:
+                fund_names = []
         fd_rows = compare_fds()
         try:
             import upstox_adapter as _market_adapter
