@@ -209,6 +209,30 @@ def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]
             pass
 
         if category == "mutual-funds":
+            # Upstox provides the full MF scheme master and latest NAV. For
+            # historical returns, use already-cached AMFI metrics first; only
+            # then fall back to MFAPI for a scheme we can resolve.
+            try:
+                from database import mutual_fund_metrics
+                target_name = str(row.get("name", "")).strip().lower()
+                cached = next(
+                    (
+                        x for x in mutual_fund_metrics()
+                        if str(x.get("scheme_name", "")).strip().lower() == target_name
+                        and any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+                    ),
+                    None,
+                )
+                if cached:
+                    item.update({
+                        "return_1y": cached.get("return_1y"),
+                        "return_3y": cached.get("return_3y"),
+                        "return_5y": cached.get("return_5y"),
+                    })
+                    item["history_source"] = cached.get("source") or "AMFI cached history"
+                    return item
+            except Exception:
+                pass
             fallback = _mfapi_metrics(key)
             if fallback:
                 item.update(fallback)
@@ -407,7 +431,7 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "bonds": {
-                "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else "upstox",
+            "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else "upstox",
             "source": snapshot.get("_fallback", {}).get("bonds") or "Upstox listed bond/debt quotes",
             "metrics": bond_metrics,
             "analyzed_options": bonds,
