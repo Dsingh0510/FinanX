@@ -286,20 +286,80 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
             if metrics.get("available"):
                 item.update(metrics)
                 item["history_source"] = "Upstox historical candles"
-            elif category == "stocks":
+            else:
                 public_symbol = row.get("symbol") or row.get("trading_symbol")
-                fallback = _public_history_metrics(public_symbol)
+                if category in {"commodities", "currency", "gold"}:
+                    text = " ".join(
+                        str(row.get(k, "")) for k in ("name", "symbol", "trading_symbol", "underlying", "underlying_symbol")
+                    ).upper()
+                    public_symbol = None
+                    if category == "gold" or "GOLD" in text:
+                        public_symbol = "GC=F"
+                    elif "SILVER" in text:
+                        public_symbol = "SI=F"
+                    elif "CRUDE" in text:
+                        public_symbol = "CL=F"
+                    elif "COPPER" in text:
+                        public_symbol = "HG=F"
+                    elif "NATURALGAS" in text or "NATURAL GAS" in text or "NATGAS" in text:
+                        public_symbol = "NG=F"
+                    elif "ZINC" in text:
+                        public_symbol = "ZNC=F"
+                    elif "ALUMIN" in text or "ALUMINI" in text:
+                        public_symbol = "ALI=F"
+                    elif "USDINR" in text or "USD/INR" in text:
+                        public_symbol = "USDINR=X"
+                    elif "EURINR" in text or "EUR/INR" in text:
+                        public_symbol = "EURINR=X"
+                    elif "GBPINR" in text or "GBP/INR" in text:
+                        public_symbol = "GBPINR=X"
+                    elif "JPYINR" in text or "JPY/INR" in text:
+                        public_symbol = "JPYINR=X"
+                    elif "AUDINR" in text or "AUD/INR" in text:
+                        public_symbol = "AUDINR=X"
+                    elif "CNYINR" in text or "CNY/INR" in text:
+                        public_symbol = "CNYINR=X"
+                fallback = _public_history_metrics(public_symbol) if public_symbol else {}
                 if fallback.get("available"):
                     item.update(fallback)
         except Exception:
-            if category == "stocks":
-                try:
-                    public_symbol = row.get("symbol") or row.get("trading_symbol")
-                    fallback = _public_history_metrics(public_symbol)
-                    if fallback.get("available"):
-                        item.update(fallback)
-                except Exception:
-                    pass
+            try:
+                public_symbol = row.get("symbol") or row.get("trading_symbol")
+                if category in {"commodities", "currency", "gold"}:
+                    text = " ".join(
+                        str(row.get(k, "")) for k in ("name", "symbol", "trading_symbol", "underlying", "underlying_symbol")
+                    ).upper()
+                    if category == "gold" or "GOLD" in text:
+                        public_symbol = "GC=F"
+                    elif "SILVER" in text:
+                        public_symbol = "SI=F"
+                    elif "CRUDE" in text:
+                        public_symbol = "CL=F"
+                    elif "COPPER" in text:
+                        public_symbol = "HG=F"
+                    elif "NATURALGAS" in text or "NATURAL GAS" in text or "NATGAS" in text:
+                        public_symbol = "NG=F"
+                    elif "ZINC" in text:
+                        public_symbol = "ZNC=F"
+                    elif "ALUMIN" in text or "ALUMINI" in text:
+                        public_symbol = "ALI=F"
+                    elif "USDINR" in text or "USD/INR" in text:
+                        public_symbol = "USDINR=X"
+                    elif "EURINR" in text or "EUR/INR" in text:
+                        public_symbol = "EURINR=X"
+                    elif "GBPINR" in text or "GBP/INR" in text:
+                        public_symbol = "GBPINR=X"
+                    elif "JPYINR" in text or "JPY/INR" in text:
+                        public_symbol = "JPYINR=X"
+                    elif "AUDINR" in text or "AUD/INR" in text:
+                        public_symbol = "AUDINR=X"
+                    elif "CNYINR" in text or "CNY/INR" in text:
+                        public_symbol = "CNYINR=X"
+                fallback = _public_history_metrics(public_symbol) if public_symbol else {}
+                if fallback.get("available"):
+                    item.update(fallback)
+            except Exception:
+                pass
         return item
 
     out = []
