@@ -4,6 +4,7 @@ import gzip
 import io
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 
@@ -92,8 +93,16 @@ def global_instruments():
     )
 
 
+def _normalize_instrument_label(value):
+    return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
+
+
 def _find_global_indicator_key(*terms):
-    wanted = [str(term).strip().upper() for term in terms if str(term).strip()]
+    wanted = [
+        _normalize_instrument_label(term)
+        for term in terms
+        if _normalize_instrument_label(term)
+    ]
     if not wanted:
         return None
     try:
@@ -101,12 +110,22 @@ def _find_global_indicator_key(*terms):
     except Exception:
         return None
     if isinstance(rows, dict):
-        rows = rows.get("data") or rows.get("instruments") or []
-    for row in rows if isinstance(rows, list) else []:
+        rows = rows.get("data") or rows.get("instruments") or rows
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
         if str(row.get("segment", "")).upper() != "GLOBAL_INDICATOR":
             continue
-        label = " ".join([str(row.get("name", "")), str(row.get("trading_symbol", ""))]).upper()
-        if any(term in label for term in wanted):
+        label = _normalize_instrument_label(" ".join([
+            str(row.get("name", "")),
+            str(row.get("trading_symbol", "")),
+            str(row.get("asset_symbol", "")),
+        ]))
+        if any(term == label or term in label for term in wanted):
             return _instrument_key(row)
     return None
 
@@ -216,6 +235,22 @@ def _lookup_quote(quotes, key):
     return {}
 
 
+def _ltp_quotes(keys):
+    """Fetch a batched LTP fallback for instruments missing from full quotes."""
+    keys = list(dict.fromkeys([key for key in keys if key]))
+    if not keys:
+        return {}
+    try:
+        payload = _get(
+            f"{BASE}/market-quote/ltp",
+            {"instrument_key": ",".join(keys)},
+            timeout=10,
+        )
+        return payload.get("data") or {}
+    except Exception:
+        return {}
+
+
 _SINGLE_QUOTE_TTL = 15
 
 
@@ -241,7 +276,7 @@ def _quote_one(key):
 
 def _quote_value(row):
     ltp = row.get("last_price")
-    prev = row.get("prev_close_price")
+    prev = row.get("prev_close_price") or row.get("cp")
     try:
         ltp = float(ltp)
         if ltp <= 0:
@@ -452,6 +487,33 @@ def _bond_instruments(limit=None):
     return rows[:limit]
 
 
+def _unique_underlying_rows(rows, limit):
+    """Deduplicate derivative contracts to one tracked entity per underlying."""
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            -(row.get("volume") or row.get("oi") or 0),
+            row.get("_expiry_ms") or 0,
+        ),
+    )
+    output = []
+    seen = set()
+    for row in ordered:
+        entity_key = row.get("underlying_key") or _instrument_key(row)
+        if not entity_key:
+            continue
+        normalized = str(entity_key)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        item = dict(row)
+        item["_entity_key"] = normalized
+        output.append(item)
+        if limit is not None and len(output) >= limit:
+            break
+    return output
+
+
 def history_universe():
     """Return the configured market universe used for aggregate history averages."""
     fno_rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
@@ -461,19 +523,22 @@ def history_universe():
             nearest = min(expiries)
             fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
 
-    gold_rows = [
+    gold_rows = _unique_underlying_rows([
         x for x in _active_rows({"MCX_FO"}, {"FUT"})
         if "GOLD" in (
             str(x.get("underlying_symbol", "")).upper()
             + " " + str(x.get("name", "")).upper()
             + " " + str(x.get("trading_symbol", "")).upper()
         )
-    ][:TRACKING_LIMITS["gold"]]
-    commodity_rows = _active_rows({"MCX_FO"}, {"FUT"})[:TRACKING_LIMITS["commodities"]]
-    currency_rows = [
+    ], TRACKING_LIMITS["gold"])
+    commodity_rows = _unique_underlying_rows(
+        _active_rows({"MCX_FO"}, {"FUT"}),
+        TRACKING_LIMITS["commodities"],
+    )
+    currency_rows = _unique_underlying_rows([
         r for r in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
         if r.get("underlying_type") == "CUR"
-    ][:TRACKING_LIMITS["currency"]]
+    ], TRACKING_LIMITS["currency"])
 
     return {
         "stocks": _eq_instruments(TRACKING_LIMITS["stocks"]),
@@ -869,10 +934,28 @@ def market_now():
         quotes = _quotes(all_keys)
     except Exception:
         quotes = {}
+
     output_by_key = {
         key: _lookup_quote(quotes, key)
         for key in all_keys
     }
+
+    # Global indicators are supported by Upstox Full Market Quotes V3, but
+    # keep a single batched LTP fallback for any unresolved target so one
+    # missing global quote cannot blank the currency cards.
+    missing_quote_keys = [
+        key for key in all_keys
+        if not output_by_key.get(key)
+    ]
+    if missing_quote_keys:
+        try:
+            ltp_quotes = _ltp_quotes(missing_quote_keys)
+            for key in missing_quote_keys:
+                row = _lookup_quote(ltp_quotes, key)
+                if row:
+                    output_by_key[key] = row
+        except Exception:
+            pass
 
     output=[]
     for label,key,kind,unit in targets:
