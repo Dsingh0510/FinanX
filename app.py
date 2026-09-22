@@ -69,10 +69,7 @@ def plan():
 
 @app.post('/api/analyze/fast')
 def analyze_fast():
-    """Return a quick provisional plan so the UI can respond immediately.
-    The full tracked-universe analysis is refreshed separately and can replace
-    this result once the background cache is warm.
-    """
+    """Return a near-instant allocation using cached market metrics when available."""
     try:
         p = request.get_json(force=True)
         amount = _parse_amount(str(p.get('amount', '0')))
@@ -82,12 +79,43 @@ def analyze_fast():
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
 
-        import vercel_market
-        market = vercel_market.category_market_analysis()
-        result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
-        result['provisional'] = True
-        result['data_note'] = 'Quick plan shown while the full tracked-universe market analysis refreshes in the background.'
-        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'market': market, **result})
+        import upstox_adapter as _ua
+        market = _ua._ANALYSIS if _ua._ANALYSIS is not None else None
+        if market is None:
+            from allocation_engine import build_portfolio
+            quick = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
+            # Project the quick allocation with conservative category planning rates.
+            rates = {'fd':6.25,'bonds':7.0,'mutual-funds':10.0,'gold':7.0,'stocks':10.0,'commodities':6.0,'currency':3.0,'fno':0.0}
+            projected = 0.0
+            rows = []
+            for item in quick['allocations']:
+                rate = rates.get(item['slug'],6.0)
+                value = item['amount'] * ((1 + rate/100) ** horizon)
+                projected += value
+                rows.append({
+                    'slug': item['slug'], 'asset': item['asset'], 'percent': item['percent'],
+                    'amount': item['amount'], 'annual_return_estimate': rate,
+                    'projected_value': round(value,2), 'projected_gain': round(value-item['amount'],2),
+                    'yoy_return': None, 'three_year_return': None, 'five_year_return': None,
+                    'basis': 'Quick cached planning model',
+                })
+            result = dict(quick)
+            result['allocations'] = rows
+            result['projected_value'] = round(projected,2)
+            result['projected_gain'] = round(projected-amount,2)
+            result['annual_return_estimate'] = round((projected/amount)**(1/max(horizon,1))*100-100,2) if amount else 0
+            result['projected_3y_value'] = None
+            result['projected_5y_value'] = None
+            result['ranked_categories'] = []
+            result['selected_entities'] = []
+            result['scenario_comparison'] = []
+            result['explanation'] = 'Quick allocation shown from your profile while the cached full market analysis refreshes.'
+            result['provisional'] = True
+        else:
+            result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
+            result['provisional'] = True
+            result['explanation'] = 'Quick result from the cached market analysis; the full tracked-universe result will replace it.'
+        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), **result})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
