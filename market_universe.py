@@ -450,27 +450,61 @@ def tracking_universe():
     }
 
 
+def _find_index_key(*names):
+    wanted = {str(x).strip().upper() for x in names}
+    for row in instruments():
+        if row.get("segment") != "NSE_INDEX":
+            continue
+        text = {
+            str(row.get("name", "")).strip().upper(),
+            str(row.get("trading_symbol", "")).strip().upper(),
+        }
+        if wanted & text:
+            return row.get("instrument_key")
+    return None
+
+
 def market_now():
     targets = [
         ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
+        ("Gold", None, "commodity"),
+        ("USD/INR", None, "currency"),
         ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
         ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
         ("Reliance Industries", "NSE_EQ|INE002A01018", "equity"),
         ("HDFC Bank", "NSE_EQ|INE040A01034", "equity"),
         ("TCS", "NSE_EQ|INE467B01029", "equity"),
+        ("India VIX", "NSE_INDEX|India VIX", "index"),
     ]
 
     gold = compare_gold()
     if gold:
-        targets.append(("Gold", gold[0]["instrument_key"], "commodity"))
+        targets[1] = ("Gold", gold[0]["instrument_key"], "commodity")
 
-    usd = [x for x in compare_currency() if "USDINR" in str(x.get("symbol", "")).upper() or "USDINR" in str(x.get("underlying", "")).upper()]
+    usd = [
+        x for x in compare_currency()
+        if "USDINR" in str(x.get("symbol", "")).upper()
+        or "USDINR" in str(x.get("underlying", "")).upper()
+    ]
     if usd:
-        targets.append(("USD/INR", usd[0]["instrument_key"], "currency"))
+        targets[2] = ("USD/INR", usd[0]["instrument_key"], "currency")
 
-    quotes = _quotes([k for _, k, _ in targets])
+    index_fallbacks = {
+        "NIFTY 50": ("NSE_INDEX|Nifty 50",),
+        "NIFTY Bank": ("NSE_INDEX|Nifty Bank",),
+        "NIFTY IT": ("NSE_INDEX|Nifty IT",),
+        "India VIX": ("NSE_INDEX|India VIX",),
+    }
+    for i, (label, key, kind) in enumerate(targets):
+        if not key and label in index_fallbacks:
+            key = _find_index_key(label, *index_fallbacks[label])
+            targets[i] = (label, key, kind)
+
+    quotes = _quotes([key for _, key, _ in targets if key])
     output = []
     for label, key, kind in targets:
+        if not key:
+            continue
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
@@ -484,4 +518,4 @@ def market_now():
             "freshness": "live",
             "instrument_key": key,
         })
-    return output[:8]
+    return output
