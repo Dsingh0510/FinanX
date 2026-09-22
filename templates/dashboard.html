@@ -294,24 +294,6 @@ async function refreshMarket(){
     window._finanxMarketBusy=false;
   }
 }
-);
-  const timer=setTimeout(()=>controller.abort(),7000);
-  try{
-    const r=await fetch('/api/market/highlights',{cache:'no-store',signal:controller.signal});
-    const data=await r.json();
-    const items=data.items||[];
-    renderHeroMarket(items);
-    renderMarketHighlights(items);
-  }catch(e){
-    const hero=document.getElementById('hero-market-list');
-    if(hero) hero.innerHTML='<div class="hero-market-row"><span>Market data</span><b>Temporarily unavailable</b></div>';
-    const grid=document.getElementById('market-now-grid');
-    if(grid) grid.innerHTML='<div class="market-now-empty">Live feed unavailable — showing the latest public/reference cache.</div>';
-  }finally{
-    clearTimeout(timer);
-    window._finanxMarketBusy=false;
-  }
-}
 
 let warmStarted=false;
 async function warmMarketAnalysis(){
