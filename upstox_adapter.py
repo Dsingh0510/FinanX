@@ -434,6 +434,21 @@ def category_market_analysis() -> dict:
 
     fund_metrics = _category_metrics(funds, 14.0)
     bond_metrics = _category_metrics(bonds, 7.0)
+    bond_data_status = "upstox"
+    if not bond_metrics.get("available"):
+        try:
+            from amfi_data import bond_proxy_metrics
+            proxy = bond_proxy_metrics()
+            if proxy.get("available"):
+                for key in ("return_1y", "return_3y", "return_5y"):
+                    if proxy.get(key) is not None:
+                        bond_metrics[key] = proxy.get(key)
+                bond_metrics["available"] = True
+                bond_metrics["sample_size"] = proxy.get("sample_size") or bond_metrics.get("sample_size", 0)
+                bond_metrics["volatility_annualized"] = bond_metrics.get("volatility_annualized") or 7.0
+                bond_data_status = "fallback"
+        except Exception:
+            pass
     gold_metrics = _category_metrics(gold, 16.0)
     commodity_metrics = _category_metrics(commodities, 25.0)
     currency_metrics = _category_metrics(currency, 12.0)
@@ -489,8 +504,8 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "bonds": {
-            "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else "upstox",
-            "source": snapshot.get("_fallback", {}).get("bonds") or "Upstox listed bond/debt quotes",
+            "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else bond_data_status,
+            "source": snapshot.get("_fallback", {}).get("bonds") or ("AMFI corporate-bond proxy history + Upstox listed bond/debt quotes" if bond_data_status == "fallback" else "Upstox listed bond/debt quotes"),
             "metrics": bond_metrics,
             "analyzed_options": bonds,
             "updated_at": now,
