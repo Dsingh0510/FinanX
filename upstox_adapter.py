@@ -294,7 +294,11 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             pool.submit(_history_for_rows, rows, category, limit): category
             for category, (rows, _, limit) in history_jobs.items()
         }
-        fno_future = pool.submit(_history_for_fno_underlyings, fno, None)
+        fno_future = pool.submit(
+            _history_for_fno_underlyings,
+            hu.get("fno", [])[:TRACKING_LIMITS["fno"]],
+            None,
+        )
         for future in as_completed([*futures.keys(), fno_future]):
             if future is fno_future:
                 try:

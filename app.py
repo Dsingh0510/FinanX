@@ -138,16 +138,15 @@ def analyze():
         goal = str(p.get('goal', 'balanced_growth')).lower()
         emergency = str(p.get('emergency', 'yes')).lower()
         engine = _engine()
-        market = engine.category_market_analysis(allow_stale=True)
+        market = engine.category_market_analysis(allow_stale=False)
         tracking = market.get('_tracking') or {}
-        if engine.__name__ == 'upstox_adapter' and tracking and not tracking.get('ready', False):
-            return jsonify({
-                'error': 'FinanX has not completed its configured tracking universe yet.',
-                'message': tracking.get('message'),
-                'tracking': tracking,
-            }), 503
         result = build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market)
-        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'market': market, **result})
+        return jsonify({
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'market': market,
+            'tracking': tracking,
+            **result,
+        })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
@@ -158,7 +157,7 @@ def analyze():
 def warm_market():
     try:
         engine = _engine()
-        market = engine.category_market_analysis(force=True)
+        market = engine.category_market_analysis(allow_stale=False, force=False)
         return jsonify({
             'success': True,
             'ready': True,
