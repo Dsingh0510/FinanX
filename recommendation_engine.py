@@ -264,13 +264,21 @@ def _select_entity_allocations(amount: float, category_weights: Dict[str, float]
 
         if not chosen:
             # A category without entity records keeps its category-level model.
+            planning = _planning_rate(
+                category,
+                market_segments.get(category, {}).get('metrics') or {},
+            )
             selected[category] = [{
                 'name': next((x['name'] for x in ASSET_INFO if x['slug'] == category), category),
                 'category': category,
                 'score': 0.0,
                 'weight_within_category': 1.0,
-                'annual_return_estimate': _planning_rate(category, market_segments.get(category, {}).get('metrics') or {})['annual_return_estimate'],
-                'volatility_estimate': _planning_rate(category, market_segments.get(category, {}).get('metrics') or {})['volatility_estimate'],
+                'invested': round(amount * category_pct, 2),
+                'annual_return_estimate': planning['annual_return_estimate'],
+                'volatility_estimate': planning['volatility_estimate'],
+                'yoy_return': planning.get('yoy_return'),
+                'three_year_return': planning.get('three_year_return'),
+                'five_year_return': planning.get('five_year_return'),
                 'basis': 'category planning rate',
             }]
             continue
@@ -314,7 +322,14 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
         cat_vol = 0.0
 
         for entity in category_bucket:
-            invested = entity['invested']
+            invested = entity.get('invested')
+            if invested is None:
+                within = float(entity.get('weight_within_category', 0.0) or 0.0)
+                if within <= 0:
+                    within = 1.0
+                invested = category_invested * within
+            else:
+                invested = float(invested)
             rate = entity['annual_return_estimate']
             vol = entity['volatility_estimate']
             v3_rate = entity.get('three_year_return')
