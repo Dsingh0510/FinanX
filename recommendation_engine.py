@@ -596,7 +596,7 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
         'notes': [
             'The allocation is data-driven across the configured tracked universe, not a fixed percentage-only template.',
             'Historical returns are used at entity level where available; quote-only entities use a category planning rate plus live risk proxies.',
-            'Portfolio volatility is a conservative weighted-volatility proxy because tracked cross-asset correlations are not currently available.',',
+            'Portfolio volatility is a conservative weighted-volatility proxy because tracked cross-asset correlations are not currently available.',
             'Projected values are illustrative scenarios. Actual returns, prices, rates, taxes and liquidity can differ materially.',
             'F&O remains tightly limited because derivatives can magnify losses and are not treated as a normal core diversification bucket.',
         ],
