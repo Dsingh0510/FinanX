@@ -15,6 +15,7 @@ MF_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchang
 
 _INSTRUMENT_CACHE = {}
 _QUOTE_CACHE = {}
+_QUOTE_ITEM_CACHE = {}
 TTL = 30 * 60
 QUOTE_TTL = 60
 
@@ -62,6 +63,7 @@ def clear_runtime_caches():
     """Clear in-process Upstox instrument/quote caches."""
     _INSTRUMENT_CACHE.clear()
     _QUOTE_CACHE.clear()
+    _QUOTE_ITEM_CACHE.clear()
 
 
 def _load_gzip_json(url, timeout=30):
@@ -80,13 +82,26 @@ def mutual_fund_instruments():
 
 
 def _quotes(keys):
-    """Fetch Upstox V3 full quotes without letting one bad key blank the batch."""
+    """Fetch Upstox quotes with per-instrument caching and bounded retries."""
     keys = [k for k in keys if k]
     if not keys:
         return {}
     unique = list(dict.fromkeys(keys))
+    now = datetime.now(timezone.utc).timestamp()
 
-    def fetch_chunk(chunk):
+    out = {}
+    misses = []
+    for key in unique:
+        hit = _QUOTE_ITEM_CACHE.get(key)
+        if hit and now - hit[0] < QUOTE_TTL:
+            out[key] = hit[1]
+        else:
+            misses.append(key)
+
+    if not misses:
+        return out
+
+    def fetch_chunk(chunk, depth=0):
         try:
             payload = _get(
                 f"{BASE}/market-quote/quotes",
@@ -97,26 +112,52 @@ def _quotes(keys):
         except requests.HTTPError as exc:
             response = getattr(exc, "response", None)
             status = getattr(response, "status_code", None)
-            if status in (401, 403):
-                raise
-            if len(chunk) == 1:
-                return {}
-            mid = len(chunk) // 2
-            left = fetch_chunk(chunk[:mid])
-            right = fetch_chunk(chunk[mid:])
-            left.update(right)
-            return left
-        except Exception:
-            if len(chunk) == 1:
-                return {}
-            mid = len(chunk) // 2
-            left = fetch_chunk(chunk[:mid])
-            right = fetch_chunk(chunk[mid:])
-            left.update(right)
-            return left
 
-    cache_key = "quotes:" + ",".join(sorted(unique))
-    return _cache_get(_QUOTE_CACHE, cache_key, lambda: fetch_chunk(unique), QUOTE_TTL)
+            # Authentication/authorization or server-side/transient failures
+            # should not fan out into dozens of requests.
+            if status in (401, 403) or (status is not None and status >= 500):
+                raise
+
+            # Split only for request-validation/instrument-key failures.
+            if status not in (400, 404, 409, 422) or len(chunk) <= 1 or depth >= 6:
+                return {}
+
+            mid = len(chunk) // 2
+            left = fetch_chunk(chunk[:mid], depth + 1)
+            right = fetch_chunk(chunk[mid:], depth + 1)
+            left.update(right)
+            return left
+        except (requests.Timeout, requests.ConnectionError):
+            # A transient network failure affects the whole request, not one
+            # instrument. Do not turn it into an O(n) request storm.
+            return {}
+        except Exception:
+            return {}
+
+    data = fetch_chunk(misses)
+
+    # Upstox returns exchange-keyed objects. Cache each successful item
+    # separately so future requests with overlapping universes reuse them.
+    stamp = datetime.now(timezone.utc).timestamp()
+    for returned_key, value in (data or {}).items():
+        if isinstance(value, dict):
+            out[returned_key] = value
+            normalized = str(returned_key).replace(":", "|")
+            _QUOTE_ITEM_CACHE[normalized] = (stamp, value)
+
+            for requested in misses:
+                variants = {
+                    requested,
+                    requested.replace("|", ":"),
+                    requested.replace(":", "|"),
+                    requested.replace("NSE_INDEX|", "NSE_INDEX:"),
+                }
+                if returned_key in variants or normalized in variants:
+                    _QUOTE_ITEM_CACHE[requested] = (stamp, value)
+                    out[requested] = value
+                    break
+
+    return out
 
 
 def _lookup_quote(quotes, key):
@@ -151,9 +192,7 @@ def _quote_one(key):
             )
             data = payload.get("data") or {}
             if data:
-                # Upstox keys responses by EXCHANGE:SYMBOL; avoid depending
-                # on a single exact spelling.
-                return next(iter(data.values())) if len(data) == 1 else _lookup_quote(data, key)
+                return _lookup_quote(data, key) or (next(iter(data.values())) if len(data) == 1 else {})
         except Exception:
             return {}
         return {}
@@ -285,7 +324,7 @@ def compare_fno():
     output = []
     for row in rows:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -318,32 +357,55 @@ def compare_fno():
     return result[:TRACKING_LIMITS["fno"]]
 
 
-def _bond_instruments(limit=None):
-    """Find listed debt-like instruments from the Upstox equity universe."""
-    words = (
-        "BOND", "GILT", "SDL", "GSEC", "BHARAT", "NCD", "DEBENTURE",
-        "SECURITY", "TBILL", "T-BILL", "SGB", "SOVEREIGN", "TREASURY",
+def _is_bond_instrument(row):
+    """Conservatively classify listed debt instruments from Upstox metadata."""
+    instrument_type = str(row.get("instrument_type") or "").strip().upper()
+    asset_type = str(row.get("asset_type") or "").strip().upper()
+    if instrument_type in {"BOND", "GSEC", "SDL", "TBILL", "T-BILL", "NCD", "DEBENTURE"}:
+        return True
+    if asset_type in {"BOND", "GSEC", "SDL", "TBILL", "T-BILL", "NCD", "DEBENTURE"}:
+        return True
+
+    name = str(row.get("name") or "").upper()
+    symbol = str(row.get("trading_symbol") or "").upper()
+    text = f"{name} {symbol}"
+
+    import re
+    strong_patterns = (
+        r"\bBOND\b",
+        r"\bNCD\b",
+        r"\bDEBENTURE\b",
+        r"\bGSEC\b",
+        r"\bSDL\b",
+        r"\bSGB\b",
+        r"\bTBILL\b",
+        r"\bT[- ]BILL\b",
+        r"\bTREASURY\b",
+        r"\bSOVEREIGN\b",
+        r"\bGOVERNMENT SECURITY\b",
+        r"\bGOVT(?:ERNMENT)?\b.*\b(?:SEC|SECURITY)\b",
     )
+    return any(re.search(pattern, text) for pattern in strong_patterns)
+
+
+def _bond_instruments(limit=None):
+    """Find listed debt-like instruments conservatively from Upstox metadata."""
     rows = []
-    for x in instruments():
-        if x.get("segment") not in ("NSE_EQ", "BSE_EQ"):
+    for row in instruments():
+        if row.get("segment") not in ("NSE_EQ", "BSE_EQ"):
             continue
-        if x.get("instrument_type") not in ("EQ", "BOND"):
+        if row.get("instrument_type") not in ("EQ", "BOND", "GSEC", "SDL", "TBILL", "T-BILL", "NCD", "DEBENTURE"):
             continue
-        text = (
-            str(x.get("name", "")).upper()
-            + " "
-            + str(x.get("trading_symbol", "")).upper()
-        )
-        if any(word in text for word in words):
-            rows.append(x)
+        if _is_bond_instrument(row):
+            rows.append(row)
+
     rows.sort(key=lambda x: (
-        0 if "GSEC" in str(x.get("name", "")).upper() else 1,
-        str(x.get("trading_symbol", "")).upper(),
+        0 if str(x.get("instrument_type") or "").upper() in {"BOND", "GSEC", "SDL", "TBILL", "T-BILL", "NCD", "DEBENTURE"} else 1,
+        0 if "GSEC" in str(x.get("name") or "").upper() else 1,
+        str(x.get("trading_symbol") or "").upper(),
     ))
     limit = TRACKING_LIMITS["bonds"] if limit is None else limit
     return rows[:limit]
-
 
 
 def history_universe():
@@ -386,7 +448,7 @@ def compare_bonds():
     output = []
     for row in rows:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -415,7 +477,7 @@ def compare_commodities():
     output = []
     for row in rows[:TRACKING_LIMITS["commodities"]]:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -449,7 +511,7 @@ def compare_gold():
     output = []
     for row in rows:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -475,7 +537,7 @@ def compare_currency():
     output = []
     for row in rows[:TRACKING_LIMITS["currency"]]:
         key = _instrument_key(row)
-        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
@@ -575,9 +637,9 @@ def compare_mutual_funds(limit=None):
 
 
 def compare_fds():
-    # Upstox's documented market/instrument APIs do not expose bank FD-rate
-    # tables, so FD rates intentionally use a small official-bank fallback.
-    return [
+    # Upstox does not expose bank-deposit rate tables. Keep this reference
+    # registry separate from market quotes and explicitly mark source quality.
+    rows = [
         {"bank": "SBI", "tenor": "1 year to <2 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-06-16", "source": "Official SBI retail term-deposit table"},
         {"bank": "HDFC Bank", "tenor": "1 year to <15 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-08-19", "source": "Official HDFC Bank FD rate page"},
         {"bank": "PNB", "tenor": "1 year", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-06-18", "source": "Official PNB domestic term-deposit table"},
@@ -589,6 +651,12 @@ def compare_fds():
         {"bank": "Indian Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Indian Bank rate"},
         {"bank": "Kotak Mahindra Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Kotak rate"},
     ]
+
+    for row in rows:
+        effective = str(row.get("effective") or "")
+        row["source_status"] = "dated_reference" if len(effective) == 10 and effective.count("-") == 2 else "month_reference"
+        row["live_verification_required"] = row["source_status"] != "dated_reference"
+    return rows
 
 
 def tracking_universe():
@@ -719,8 +787,6 @@ def market_now():
         symbol=str(row.get("trading_symbol") or "").strip()
         add(row.get("short_name") or row.get("name") or symbol or "Listed Bond",_instrument_key(row),"bond")
         if sum(1 for x in targets if x[2]=="bond")>=5: break
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     output_by_key = {}
     quote_targets = [(label, key, kind, unit) for label, key, kind, unit in targets if key]
