@@ -183,10 +183,11 @@ def _mfapi_metrics(scheme_key: str) -> dict:
         return {}
 
 
-def _history_for_rows(rows: list[dict], category: str, limit: int | None = None) -> list[dict]:
+def _history_for_rows(rows: list[dict], category: str, limit: int | None = None, mf_cache: dict | None = None) -> list[dict]:
     if not rows:
         return []
     candidates = list(rows[:limit] if limit is not None else rows)
+    mf_cache = mf_cache or {}
 
     def work(row):
         item = dict(row)
@@ -195,32 +196,17 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None)
             return item
 
         if category == "mutual-funds":
-            try:
-                from database import mutual_fund_metrics
-                cached_rows = mutual_fund_metrics()
-                target_name = str(row.get("name", "")).strip().lower()
-                target_code = str(row.get("scheme_code", "")).split("|")[-1].strip()
-                cached = next(
-                    (
-                        x for x in cached_rows
-                        if (
-                            str(x.get("scheme_code", "")).strip() == target_code
-                            or str(x.get("scheme_name", "")).strip().lower() == target_name
-                        )
-                        and any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
-                    ),
-                    None,
-                )
-                if cached:
-                    item.update({
-                        "return_1y": cached.get("return_1y"),
-                        "return_3y": cached.get("return_3y"),
-                        "return_5y": cached.get("return_5y"),
-                        "history_source": cached.get("source") or "AMFI history",
-                    })
-                    return item
-            except Exception:
-                pass
+            target_name = str(row.get("name", "")).strip().lower()
+            target_code = str(row.get("scheme_code", "")).split("|")[-1].strip()
+            cached = mf_cache.get(target_code) or mf_cache.get(target_name)
+            if cached:
+                item.update({
+                    "return_1y": cached.get("return_1y"),
+                    "return_3y": cached.get("return_3y"),
+                    "return_5y": cached.get("return_5y"),
+                    "history_source": cached.get("source") or "AMFI history",
+                })
+                return item
             fallback = _mfapi_metrics(key)
             if fallback:
                 item.update(fallback)
@@ -237,7 +223,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None)
         return item
 
     out = []
-    with ThreadPoolExecutor(max_workers=min(20, len(candidates))) as pool:
+    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
         futures = [pool.submit(work, row) for row in candidates]
         for future in as_completed(futures):
             try:
@@ -334,6 +320,12 @@ def _load_live_universe() -> dict:
                 for x in cached
                 if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
             }
+            by_code = {
+                str(x.get("scheme_code", "")).strip(): x
+                for x in cached
+                if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+            }
+            mf_cache = {**by_name, **by_code}
             for row in snapshot["mutual-funds"]:
                 hist = by_name.get(str(row.get("name", "")).strip().lower())
                 if hist:
@@ -342,7 +334,9 @@ def _load_live_universe() -> dict:
                     row["return_5y"] = hist.get("return_5y")
                     row["history_source"] = hist.get("source") or "AMFI history"
         except Exception:
-            pass
+            mf_cache = {}
+    if "mf_cache" not in locals():
+        mf_cache = {}
 
     # Fallback sources are touched only when the primary Upstox segment call
     # fails or returns no usable records.
@@ -379,10 +373,10 @@ def _load_live_universe() -> dict:
     return snapshot
 
 
-def category_market_analysis() -> dict:
+def category_market_analysis(*, allow_stale: bool = False, force: bool = False) -> dict:
     global _ANALYSIS, _ANALYSIS_AT
     now_ts = datetime.now(timezone.utc).timestamp()
-    if _ANALYSIS is not None and now_ts - _ANALYSIS_AT < _ANALYSIS_TTL:
+    if _ANALYSIS is not None and not force and (allow_stale or now_ts - _ANALYSIS_AT < _ANALYSIS_TTL):
         return _ANALYSIS
 
     now = datetime.now(timezone.utc).isoformat()
@@ -411,7 +405,7 @@ def category_market_analysis() -> dict:
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
-            pool.submit(_history_for_rows, rows, category, limit): category
+            pool.submit(_history_for_rows, rows, category, limit, mf_cache): category
             for category, (rows, _, limit) in history_jobs.items()
         }
         fno_future = pool.submit(_history_for_fno_underlyings, fno, None)
