@@ -532,7 +532,14 @@ def history_universe():
         )
     ], TRACKING_LIMITS["gold"])
     commodity_rows = _unique_underlying_rows(
-        _active_rows({"MCX_FO"}, {"FUT"}),
+        [
+            row for row in _active_rows({"MCX_FO"}, {"FUT"})
+            if "GOLD" not in (
+                str(row.get("underlying_symbol", "")).upper()
+                + " " + str(row.get("name", "")).upper()
+                + " " + str(row.get("trading_symbol", "")).upper()
+            )
+        ],
         TRACKING_LIMITS["commodities"],
     )
     currency_rows = _unique_underlying_rows([
