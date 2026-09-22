@@ -251,24 +251,22 @@ document.getElementById('planner-form').addEventListener('submit',createPlan);
 function renderMarketHighlights(items){
   const grid=document.getElementById('market-now-grid');
   if(!grid) return;
-  const wanted=['NIFTY 50','Gold','USD/INR','NIFTY Bank','NIFTY IT','Reliance Industries','HDFC Bank','TCS','India VIX'];
-  const byLabel=Object.fromEntries((items||[]).map(x=>[x.label,x]));
-  const display=wanted.map(x=>byLabel[x]).filter(Boolean);
+  const display=(items||[]).filter(x=>x && x.label);
   if(!display.length){grid.innerHTML='<div class="market-now-empty">Market values are temporarily unavailable.</div>';return;}
-  grid.innerHTML=display.slice(0,9).map(item=>{
+  grid.innerHTML=display.map(item=>{
     const isMf=item.kind==='mutual_fund';
     const isFd=item.kind==='fd';
     const isYield=item.kind==='bond_yield';
     const isCurrency=item.kind==='currency';
     const isGold=item.kind==='gold'||item.kind==='commodity';
-    const prefix=(isCurrency||isGold)?'₹':'';
+    const prefix=(isCurrency||isGold||item.kind==='equity'||item.kind==='index')?'₹':'';
     const suffix=item.unit?(' '+escapeHtml(item.unit)):'';
     const value=item.value==null?'—':(isYield?Number(item.value).toFixed(2)+'%':isFd?Number(item.value).toFixed(2)+'%':prefix+Number(item.value).toLocaleString('en-IN',{maximumFractionDigits:isMf?4:2})+suffix);
     const today=item.today_change==null?'':('<span class="'+(item.today_change>=0?'positive':'negative')+'">'+(item.today_change>=0?'+':'')+Number(item.today_change).toFixed(2)+'% today</span>');
     const date=item.date?'<span class="market-date">'+escapeHtml(String(item.date))+'</span>':'';
     const freshness=item.freshness==='live'?'LIVE':isMf?'Daily NAV':isFd?'Rate reference':'Latest available';
     return '<article class="market-now-card">'+
-      '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':isGold?'COMMODITY':'MARKET')+'</span>'+today+'</div>'+
+      '<div class="market-now-top"><span>'+escapeHtml(isMf?'MUTUAL FUND':isFd?'BANK FD':isGold?'COMMODITY':isCurrency?'CURRENCY':'MARKET')+'</span>'+today+'</div>'+
       '<h3>'+escapeHtml(item.label)+'</h3>'+
       '<div class="market-now-value">'+value+'</div>'+
       '<div class="market-now-meta">'+date+(date?' • ':'')+freshness+'</div>'+
@@ -296,6 +294,34 @@ async function refreshMarket(){
     window._finanxMarketBusy=false;
   }
 }
+);
+  const timer=setTimeout(()=>controller.abort(),7000);
+  try{
+    const r=await fetch('/api/market/highlights',{cache:'no-store',signal:controller.signal});
+    const data=await r.json();
+    const items=data.items||[];
+    renderHeroMarket(items);
+    renderMarketHighlights(items);
+  }catch(e){
+    const hero=document.getElementById('hero-market-list');
+    if(hero) hero.innerHTML='<div class="hero-market-row"><span>Market data</span><b>Temporarily unavailable</b></div>';
+    const grid=document.getElementById('market-now-grid');
+    if(grid) grid.innerHTML='<div class="market-now-empty">Live feed unavailable — showing the latest public/reference cache.</div>';
+  }finally{
+    clearTimeout(timer);
+    window._finanxMarketBusy=false;
+  }
+}
+
+let warmStarted=false;
+async function warmMarketAnalysis(){
+  if(warmStarted) return;
+  warmStarted=true;
+  try{ await fetch('/api/market/warm',{method:'POST',keepalive:true,cache:'no-store'}); }
+  catch(e){}
+}
+setTimeout(warmMarketAnalysis,1200);
+setInterval(()=>{warmStarted=false;warmMarketAnalysis();},600000);
 
 async function openTrackedModal(title, slug){
   const modal=document.getElementById('tracked-modal');
