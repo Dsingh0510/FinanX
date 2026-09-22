@@ -253,9 +253,6 @@ async function createPlan(e){
    setAnalysisLoading(false);
  }
  document.getElementById('plan-panel').scrollIntoView({behavior:'smooth',block:'start'});
- }finally{
-   setAnalysisLoading(false);
- }
 }
 
 document.getElementById('planner-form').addEventListener('submit',createPlan);
