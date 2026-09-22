@@ -235,15 +235,51 @@ def compare_fno():
     return result[:100]
 
 
-def compare_bonds():
+def _bond_instruments(limit=50):
+    words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT", "NCD", "DEBENTURE", "SECURITIES")
     rows = [
         x for x in instruments()
         if x.get("segment") in ("NSE_EQ", "BSE_EQ")
         and x.get("instrument_type") == "EQ"
-        and any(word in (
-            str(x.get("name", "")).upper() + " " + str(x.get("trading_symbol", "")).upper()
-        ) for word in ("BOND", "GILT", "SDL", "GSEC", "BHARAT"))
-    ][:160]
+        and any(
+            word in (
+                str(x.get("name", "")).upper()
+                + " "
+                + str(x.get("trading_symbol", "")).upper()
+            )
+            for word in words
+        )
+    ]
+    return rows[:limit]
+
+
+def history_universe():
+    """Return the configured market universe used for aggregate history averages."""
+    fno_rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
+    if fno_rows:
+        expiries = [r["_expiry_ms"] for r in fno_rows if r.get("_expiry_ms")]
+        if expiries:
+            nearest = min(expiries)
+            fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
+
+    commodity_rows = _active_rows({"MCX_FO"}, {"FUT"})[:50]
+    currency_rows = [
+        r for r in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+        if r.get("underlying_type") == "CUR"
+    ][:50]
+
+    return {
+        "stocks": _eq_instruments()[:100],
+        "bonds": _bond_instruments(50),
+        "mutual-funds": compare_mutual_funds(100),
+        "commodities": commodity_rows,
+        "currency": currency_rows,
+        "fno": fno_rows[:100],
+    }
+
+
+def compare_bonds():
+    rows = _bond_instruments(160)
     quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
     for row in rows:
@@ -461,14 +497,7 @@ def tracking_universe():
             fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
     fno_rows = fno_rows[:100]
 
-    bond_rows = [
-        x for x in instruments()
-        if x.get("segment") in ("NSE_EQ", "BSE_EQ")
-        and x.get("instrument_type") == "EQ"
-        and any(word in (
-            str(x.get("name", "")).upper() + " " + str(x.get("trading_symbol", "")).upper()
-        ) for word in ("BOND", "GILT", "SDL", "GSEC", "BHARAT"))
-    ][:50]
+    bond_rows = _bond_instruments(50)
 
     fund_rows = compare_mutual_funds(100)
 
