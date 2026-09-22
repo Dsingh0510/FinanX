@@ -382,7 +382,8 @@ def category_market_analysis() -> dict:
     # quotes already screened the complete universe.
     history_jobs = {
         "stocks": (stocks, "stocks", 12),
-        "bonds": (bonds, "bonds", 5),
+        "fno": (fno, "fno", 10),
+        "bonds": (bonds, "bonds", 8),
         "mutual-funds": (funds, "mutual-funds", 12),
         "gold": (gold, "gold", 2),
         "commodities": (commodities, "commodities", 3),
@@ -413,6 +414,7 @@ def category_market_analysis() -> dict:
         return output
 
     stocks = merge(stocks, history_results.get("stocks", []))
+    fno = merge(fno, history_results.get("fno", []))
     bonds = merge(bonds, history_results.get("bonds", []))
     funds = merge(funds, history_results.get("mutual-funds", []))
     gold = merge(gold, history_results.get("gold", []))
@@ -434,6 +436,7 @@ def category_market_analysis() -> dict:
 
     fund_metrics = _category_metrics(funds, 14.0)
     bond_metrics = _category_metrics(bonds, 7.0)
+    fno_metrics = _category_metrics(fno, 45.0)
     bond_data_status = "upstox"
     if not bond_metrics.get("available"):
         try:
@@ -540,13 +543,9 @@ def category_market_analysis() -> dict:
         },
         "fno": {
             "status": "fallback" if "fno" in snapshot.get("_fallback", {}) else "upstox",
-            "source": snapshot.get("_fallback", {}).get("fno") or "Upstox F&O market quotes",
+            "source": snapshot.get("_fallback", {}).get("fno") or "Upstox F&O market quotes + historical futures/options candles",
             "metrics": {
-                "available": False,
-                "sample_size": len(fno),
-                "return_1y": None,
-                "return_3y": None,
-                "return_5y": None,
+                **fno_metrics,
                 "live_sample_size": len(fno),
                 "active_contracts": len(fno),
             },
