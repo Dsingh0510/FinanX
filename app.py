@@ -1,8 +1,7 @@
-# Deploy verification: current Market Now syntax fixed on main
-# Production redeploy marker: Market Now syntax verified
-# FinanX deployment sync: latest GitHub revision
 from __future__ import annotations
 
+import logging
+import math
 import os
 from datetime import datetime, timezone
 
@@ -16,16 +15,66 @@ import market_universe
 
 app = Flask(__name__)
 init_database(app)
+logger = logging.getLogger(__name__)
+
+_ALLOWED_RISKS = {"low", "moderate", "high"}
+_ALLOWED_LIQUIDITY = {"high", "medium", "low"}
+_ALLOWED_GOALS = {
+    "balanced_growth",
+    "capital_preservation",
+    "wealth",
+    "education",
+}
+_ALLOWED_EMERGENCY = {"yes", "no"}
+_MIN_HORIZON = 1
+_MAX_HORIZON = 50
 
 
 def _parse_amount(raw: str) -> float:
     try:
-        amount = float(raw.replace(',', '').strip())
+        amount = float(str(raw).replace(',', '').strip())
     except (AttributeError, ValueError):
         raise ValueError('Please enter a valid amount.')
+    if not math.isfinite(amount):
+        raise ValueError('Please enter a finite amount.')
     if amount < 1000:
         raise ValueError('Enter an amount of at least ₹1,000 for the simulation.')
     return amount
+
+
+def _parse_plan_inputs(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('Request body must be a JSON object.')
+
+    try:
+        horizon = int(payload.get('horizon', 5))
+    except (TypeError, ValueError):
+        raise ValueError('Time horizon must be a whole number of years.')
+
+    risk = str(payload.get('risk', 'moderate')).strip().lower()
+    liquidity = str(payload.get('liquidity', 'medium')).strip().lower()
+    goal = str(payload.get('goal', 'balanced_growth')).strip().lower()
+    emergency = str(payload.get('emergency', 'yes')).strip().lower()
+
+    if risk not in _ALLOWED_RISKS:
+        raise ValueError('Risk must be low, moderate, or high.')
+    if liquidity not in _ALLOWED_LIQUIDITY:
+        raise ValueError('Liquidity must be high, medium, or low.')
+    if goal not in _ALLOWED_GOALS:
+        raise ValueError('Invalid financial goal.')
+    if emergency not in _ALLOWED_EMERGENCY:
+        raise ValueError('Emergency fund must be yes or no.')
+    if not _MIN_HORIZON <= horizon <= _MAX_HORIZON:
+        raise ValueError(f'Time horizon must be between {_MIN_HORIZON} and {_MAX_HORIZON} years.')
+
+    return {
+        'amount': _parse_amount(payload.get('amount', '0')),
+        'horizon': horizon,
+        'risk': risk,
+        'liquidity': liquidity,
+        'goal': goal,
+        'emergency': emergency,
+    }
 
 
 def _engine():
@@ -44,39 +93,39 @@ def home():
 def plan():
     try:
         p = request.get_json(force=True)
+        inputs = _parse_plan_inputs(p)
         result = build_portfolio(
-            amount=_parse_amount(str(p.get('amount', '0'))),
-            horizon=int(p.get('horizon', 5)),
-            risk=str(p.get('risk', 'moderate')).lower(),
-            liquidity=str(p.get('liquidity', 'medium')).lower(),
-            goal=str(p.get('goal', 'balanced_growth')).lower(),
-            emergency=str(p.get('emergency', 'yes')).lower(),
+            amount=inputs['amount'],
+            horizon=inputs['horizon'],
+            risk=inputs['risk'],
+            liquidity=inputs['liquidity'],
+            goal=inputs['goal'],
+            emergency=inputs['emergency'],
         )
         result['generated_at'] = datetime.now(timezone.utc).isoformat()
         return jsonify(result)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
+        logger.exception("Planner endpoint failed")
         return jsonify({'error': f'Planner service error: {exc}'}), 500
 
 
 @app.post('/api/analyze/fast')
 def analyze_fast():
-    """Return a near-instant allocation using cached market metrics when available."""
+    """Return a fast plan, enriching it with cached Upstox analysis when available."""
     try:
         p = request.get_json(force=True)
-        amount = _parse_amount(str(p.get('amount', '0')))
-        horizon = int(p.get('horizon', 5))
-        risk = str(p.get('risk', 'moderate')).lower()
-        liquidity = str(p.get('liquidity', 'medium')).lower()
-        goal = str(p.get('goal', 'balanced_growth')).lower()
-        emergency = str(p.get('emergency', 'yes')).lower()
-
-        from allocation_engine import build_portfolio
-        import upstox_adapter as _ua
+        inputs = _parse_plan_inputs(p)
+        amount = inputs['amount']
+        horizon = inputs['horizon']
+        risk = inputs['risk']
+        liquidity = inputs['liquidity']
+        goal = inputs['goal']
+        emergency = inputs['emergency']
 
         base = build_portfolio(amount, horizon, risk, liquidity, goal, emergency)
-        market = _ua._ANALYSIS if _ua._ANALYSIS is not None else None
+        market = upstox_adapter.cached_market_analysis()
 
         if market is not None:
             try:
@@ -93,10 +142,10 @@ def analyze_fast():
                     **result,
                 })
             except Exception:
-                pass
+                logger.exception("Cached Upstox plan calculation failed")
 
-        # Guaranteed profile-based plan while the Upstox tracked-history average
-        # is being refreshed.
+        # Profile-based plan is the intentional graceful-degradation path.
+        # It is clearly labelled and never presented as market-history output.
         for item in base["allocations"]:
             rate = {
                 "fd": 6.25, "bonds": 7.0, "mutual-funds": 10.0,
@@ -137,19 +186,20 @@ def analyze_fast():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
+        logger.exception("Fast analysis endpoint failed")
         return jsonify({'error': f'Fast analysis service error: {exc}'}), 500
 
 
 @app.post('/api/analyze')
 def analyze():
     try:
-        p = request.get_json(force=True)
-        amount = _parse_amount(str(p.get('amount', '0')))
-        horizon = int(p.get('horizon', 5))
-        risk = str(p.get('risk', 'moderate')).lower()
-        liquidity = str(p.get('liquidity', 'medium')).lower()
-        goal = str(p.get('goal', 'balanced_growth')).lower()
-        emergency = str(p.get('emergency', 'yes')).lower()
+        inputs = _parse_plan_inputs(request.get_json(force=True))
+        amount = inputs['amount']
+        horizon = inputs['horizon']
+        risk = inputs['risk']
+        liquidity = inputs['liquidity']
+        goal = inputs['goal']
+        emergency = inputs['emergency']
         engine = _engine()
         market = engine.category_market_analysis(allow_stale=False)
         tracking = market.get('_tracking') or {}
@@ -163,6 +213,7 @@ def analyze():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
+        logger.exception("Analysis endpoint failed")
         return jsonify({'error': f'Analysis service error: {exc}'}), 500
 
 
@@ -186,31 +237,30 @@ def market():
     try:
         return jsonify(_engine().market_snapshot())
     except Exception as exc:
-        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'mode': 'fallback', 'segments': [], 'items': [], 'message': str(exc)})
+        return jsonify({'generated_at': datetime.now(timezone.utc).isoformat(), 'mode': 'unavailable', 'segments': [], 'items': [], 'message': str(exc)}), 503
 
 
 @app.get('/api/market/highlights')
 def market_highlights():
     try:
-        return jsonify({'items': upstox_adapter.market_highlights()})
+        return jsonify({'items': _engine().market_highlights()})
     except Exception as exc:
         return jsonify({'items': [], 'error': str(exc)}), 503
 
 @app.post('/api/market/refresh')
 def refresh_market():
-    return jsonify({'success': 1, 'message': 'Market data refreshes per request on Vercel.', 'updated_at': datetime.now(timezone.utc).isoformat()})
+    try:
+        _engine().clear_runtime_caches()
+        return jsonify({
+            'success': True,
+            'message': 'Upstox market-data caches cleared. The next request will refresh from Upstox.',
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.exception("Market refresh failed")
+        return jsonify({'success': False, 'error': str(exc)}), 503
 
 
-
-_COMPARE_CACHE = {}
-def _compare_cached(segment, factory, ttl=900):
-    now = datetime.now(timezone.utc).timestamp()
-    hit = _COMPARE_CACHE.get(segment)
-    if hit and now - hit[0] < ttl:
-        return hit[1]
-    value = factory()
-    _COMPARE_CACHE[segment] = (now, value)
-    return value
 
 @app.get('/api/market/compare/<segment>')
 def market_compare(segment: str):
@@ -218,19 +268,19 @@ def market_compare(segment: str):
     Mutual-fund data comes from Upstox; FD rates remain separately labelled by source/date."""
     try:
         if segment == 'stocks':
-            rows = _compare_cached('stocks', market_universe.compare_stocks)
+            rows = market_universe.compare_stocks()
             return jsonify({'segment':'stocks','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
         if segment == 'fno':
-            rows = _compare_cached('fno', market_universe.compare_fno)
+            rows = market_universe.compare_fno()
             return jsonify({'segment':'fno','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
         if segment == 'funds':
-            rows = _compare_cached('funds', lambda: market_universe.compare_mutual_funds(100), ttl=1800)
+            rows = market_universe.compare_mutual_funds(100)
             return jsonify({'segment':'funds','count':len(rows),'source':'Upstox mutual-fund instrument master','items':rows})
         if segment == 'bonds':
-            rows = _compare_cached('bonds', market_universe.compare_bonds)
+            rows = market_universe.compare_bonds()
             return jsonify({'segment':'bonds','count':len(rows),'source':'Upstox exchange quotes for listed bond/debt ETFs','items':rows})
         if segment == 'fd':
-            rows = _compare_cached('fd', market_universe.compare_fds, ttl=3600)
+            rows = market_universe.compare_fds()
             return jsonify({'segment':'fd','count':len(rows),'source':'Official bank rate pages; general public, ~1-year tenor','items':rows})
         return jsonify({'error':'Unknown comparison segment'}), 404
     except Exception as exc:
@@ -351,8 +401,7 @@ def asset(slug: str):
 @app.get('/api/health')
 def health():
     try:
-        import upstox_adapter
-        upstox = upstox_adapter.healthcheck()
+        upstox = _engine().healthcheck()
     except Exception as exc:
         upstox = {'configured': False, 'reachable': False, 'error': str(exc)}
     return jsonify({

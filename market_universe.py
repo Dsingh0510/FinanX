@@ -58,6 +58,12 @@ def _cache_get(cache, key, factory, ttl):
     return value
 
 
+def clear_runtime_caches():
+    """Clear in-process Upstox instrument/quote caches."""
+    _INSTRUMENT_CACHE.clear()
+    _QUOTE_CACHE.clear()
+
+
 def _load_gzip_json(url, timeout=30):
     r = requests.get(url, headers={"User-Agent": "FinanX/1.0"}, timeout=timeout)
     r.raise_for_status()

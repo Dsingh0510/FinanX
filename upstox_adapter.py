@@ -41,6 +41,29 @@ def configured() -> bool:
     return bool(os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip())
 
 
+def cached_market_analysis() -> dict | None:
+    """Return the most recent in-process analysis without reaching the API."""
+    return _ANALYSIS
+
+
+def clear_runtime_caches() -> None:
+    """Clear in-process analysis, snapshot, history, and Market Now caches."""
+    global _SNAPSHOT, _SNAPSHOT_AT, _ANALYSIS, _ANALYSIS_AT
+    global _MARKET_HIGHLIGHTS, _MARKET_HIGHLIGHTS_AT
+    _CACHE.clear()
+    _SNAPSHOT = None
+    _SNAPSHOT_AT = 0.0
+    _ANALYSIS = None
+    _ANALYSIS_AT = 0.0
+    _MARKET_HIGHLIGHTS = []
+    _MARKET_HIGHLIGHTS_AT = 0.0
+    try:
+        from market_universe import clear_runtime_caches as clear_universe_caches
+        clear_universe_caches()
+    except Exception:
+        pass
+
+
 def _headers() -> dict[str, str]:
     token = os.getenv("UPSTOX_ANALYTICS_TOKEN", "").strip()
     if not token:
