@@ -9,9 +9,13 @@ from datetime import date, datetime, timezone
 import requests
 
 BASE = "https://api.upstox.com/v3"
-INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
-_CACHE = {}
-TTL = 15 * 60
+COMPLETE_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
+MF_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/mf-instruments.json.gz"
+
+_INSTRUMENT_CACHE = {}
+_QUOTE_CACHE = {}
+TTL = 30 * 60
+QUOTE_TTL = 60
 
 
 def _headers():
@@ -30,42 +34,50 @@ def _get(url, params=None, timeout=15):
     return payload
 
 
-def _cache_get(key, factory):
+def _cache_get(cache, key, factory, ttl):
     now = datetime.now(timezone.utc).timestamp()
-    hit = _CACHE.get(key)
-    if hit and now - hit[0] < TTL:
+    hit = cache.get(key)
+    if hit and now - hit[0] < ttl:
         return hit[1]
     value = factory()
-    _CACHE[key] = (now, value)
+    cache[key] = (now, value)
     return value
 
 
-def instruments():
-    def load():
-        r = requests.get(
-            INSTRUMENTS_URL,
-            headers={"User-Agent": "FinanX/1.0"},
-            timeout=25,
-        )
-        r.raise_for_status()
-        raw = gzip.GzipFile(fileobj=io.BytesIO(r.content)).read()
-        return json.loads(raw.decode("utf-8"))
+def _load_gzip_json(url, timeout=30):
+    r = requests.get(url, headers={"User-Agent": "FinanX/1.0"}, timeout=timeout)
+    r.raise_for_status()
+    raw = gzip.GzipFile(fileobj=io.BytesIO(r.content)).read()
+    return json.loads(raw.decode("utf-8"))
 
-    return _cache_get("nse-instruments", load)
+
+def instruments():
+    return _cache_get(_INSTRUMENT_CACHE, "complete", lambda: _load_gzip_json(COMPLETE_INSTRUMENTS_URL), TTL)
+
+
+def mutual_fund_instruments():
+    return _cache_get(_INSTRUMENT_CACHE, "mutual-funds", lambda: _load_gzip_json(MF_INSTRUMENTS_URL), TTL)
 
 
 def _quotes(keys):
+    keys = [k for k in keys if k]
     if not keys:
         return {}
-    out = {}
-    for i in range(0, len(keys), 500):
-        payload = _get(
-            f"{BASE}/market-quote/quotes",
-            {"instrument_key": ",".join(keys[i:i + 500])},
-            timeout=15,
-        )
-        out.update(payload.get("data") or {})
-    return out
+    unique = list(dict.fromkeys(keys))
+
+    def load():
+        out = {}
+        for i in range(0, len(unique), 500):
+            payload = _get(
+                f"{BASE}/market-quote/quotes",
+                {"instrument_key": ",".join(unique[i:i + 500])},
+                timeout=15,
+            )
+            out.update(payload.get("data") or {})
+        return out
+
+    cache_key = "quotes:" + ",".join(sorted(unique))
+    return _cache_get(_QUOTE_CACHE, cache_key, load, QUOTE_TTL)
 
 
 def _quote_value(row):
@@ -81,6 +93,10 @@ def _quote_value(row):
         prev = None
     change = ((ltp / prev) - 1) * 100 if ltp is not None and prev else None
     return ltp, change
+
+
+def _instrument_key(row):
+    return row.get("instrument_key") or row.get("instrument_key_name")
 
 
 LIQUID_SYMBOLS = [
@@ -107,43 +123,39 @@ LIQUID_SYMBOLS = [
 
 
 def _eq_instruments():
-    rows = [
-        x for x in instruments()
-        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
-    ]
+    rows = [x for x in instruments() if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
     by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in rows}
-    selected = [by_symbol[s] for s in LIQUID_SYMBOLS if s in by_symbol]
-    return selected[:100]
+    return [by_symbol[s] for s in LIQUID_SYMBOLS if s in by_symbol][:100]
 
 
 def compare_stocks():
     rows = _eq_instruments()
-    quotes = _quotes([r["instrument_key"] for r in rows])
-    result = []
-    for r in rows:
-        key = r["instrument_key"].replace("|", ":")
-        q = quotes.get(key) or quotes.get(r["instrument_key"]) or {}
+    quotes = _quotes([_instrument_key(r) for r in rows])
+    output = []
+    for row in rows:
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
-        result.append({
+        output.append({
             "rank": 0,
-            "name": r.get("short_name") or r.get("name") or r.get("trading_symbol"),
-            "symbol": r.get("trading_symbol"),
-            "instrument_key": r.get("instrument_key"),
+            "name": row.get("short_name") or row.get("name") or row.get("trading_symbol"),
+            "symbol": row.get("trading_symbol"),
+            "instrument_key": key,
             "price": round(ltp, 2),
             "today_change": round(change, 2) if change is not None else None,
-            "volume": q.get("volume"),
+            "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
             "year_high": q.get("year_high"),
             "year_low": q.get("year_low"),
             "prev_close": q.get("prev_close_price"),
-            "source": "Full market quote feed",
+            "source": "Upstox market quote",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
-    result.sort(key=lambda x: x.get("volume") or 0, reverse=True)
-    for i, row in enumerate(result, 1):
+    output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
+    for i, row in enumerate(output, 1):
         row["rank"] = i
-    return result[:100]
+    return output[:100]
 
 
 def _parse_expiry(value):
@@ -151,113 +163,294 @@ def _parse_expiry(value):
         return int(value)
     except (TypeError, ValueError):
         try:
-            return int(
-                datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000
-            )
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
         except Exception:
             return None
 
 
-def _fno_instruments():
-    today_ms = int(datetime.combine(date.today(), datetime.min.time()).timestamp() * 1000)
-    rows = []
-    for x in instruments():
-        if x.get("segment") != "NSE_FO":
+def _active_rows(segments, types=None):
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    result = []
+    for row in instruments():
+        if row.get("segment") not in segments:
             continue
-        typ = x.get("instrument_type")
-        if typ not in ("FUT", "CE", "PE"):
+        if types and row.get("instrument_type") not in types:
             continue
-        expiry_ms = _parse_expiry(x.get("expiry"))
-        if expiry_ms is None or expiry_ms < today_ms:
-            continue
-        x = dict(x)
-        x["_expiry_sort"] = expiry_ms
-        rows.append(x)
-
-    if not rows:
-        return []
-
-    nearest = min(x["_expiry_sort"] for x in rows)
-    rows = [x for x in rows if x["_expiry_sort"] == nearest]
-
-    futures = [
-        x for x in rows
-        if x.get("instrument_type") == "FUT"
-        and x.get("underlying_type") in ("EQUITY", "INDEX")
-    ]
-    options = [
-        x for x in rows
-        if x.get("instrument_type") in ("CE", "PE")
-        and x.get("underlying_type") in ("EQUITY", "INDEX")
-    ]
-    return futures[:120] + options[:380]
+        expiry = row.get("expiry")
+        if expiry is not None:
+            expiry_ms = _parse_expiry(expiry)
+            if expiry_ms is not None and expiry_ms < now_ms:
+                continue
+        item = dict(row)
+        item["_expiry_ms"] = _parse_expiry(expiry) if expiry is not None else None
+        result.append(item)
+    return result
 
 
 def compare_fno():
-    rows = _fno_instruments()[:500]
-    quotes = _quotes([r["instrument_key"] for r in rows])
-    result = []
+    rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
+    expiries = [r["_expiry_ms"] for r in rows if r.get("_expiry_ms")]
+    if expiries:
+        nearest = min(expiries)
+        rows = [r for r in rows if r.get("_expiry_ms") == nearest]
 
-    for r in rows:
-        key = r["instrument_key"].replace("|", ":")
-        q = quotes.get(key) or quotes.get(r["instrument_key"]) or {}
+    futures = [r for r in rows if r.get("instrument_type") == "FUT" and r.get("underlying_type") in ("EQUITY", "INDEX")]
+    options = [r for r in rows if r.get("instrument_type") in ("CE", "PE") and r.get("underlying_type") in ("EQUITY", "INDEX")]
+    rows = futures[:120] + options[:380]
+
+    quotes = _quotes([_instrument_key(r) for r in rows])
+    output = []
+    for row in rows:
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
-        result.append({
-            "name": r.get("trading_symbol") or r.get("name"),
-            "symbol": r.get("trading_symbol"),
-            "type": r.get("instrument_type"),
-            "underlying": r.get("underlying_symbol"),
-            "expiry": r.get("expiry"),
-            "strike": r.get("strike_price") if r.get("instrument_type") in ("CE", "PE") else None,
-            "lot_size": r.get("lot_size"),
+        output.append({
+            "rank": 0,
+            "name": row.get("trading_symbol") or row.get("name"),
+            "symbol": row.get("trading_symbol"),
+            "type": row.get("instrument_type"),
+            "underlying": row.get("underlying_symbol"),
+            "expiry": row.get("expiry"),
+            "strike": row.get("strike_price") if row.get("instrument_type") in ("CE", "PE") else None,
+            "lot_size": row.get("lot_size"),
             "price": round(ltp, 4),
             "today_change": round(change, 2) if change is not None else None,
-            "volume": q.get("volume"),
+            "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
             "oi": q.get("oi"),
             "previous_oi": q.get("previous_oi"),
             "year_high": q.get("year_high"),
             "year_low": q.get("year_low"),
-            "source": "Full market quote feed",
+            "source": "Upstox market quote",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    futures = sorted(
-        [x for x in result if x["type"] == "FUT"],
-        key=lambda x: x.get("volume") or 0,
-        reverse=True,
-    )[:50]
-    options = sorted(
-        [x for x in result if x["type"] in ("CE", "PE")],
-        key=lambda x: x.get("oi") or 0,
-        reverse=True,
-    )[:50]
-
+    futures = sorted([x for x in output if x["type"] == "FUT"], key=lambda x: x.get("volume") or 0, reverse=True)[:50]
+    options = sorted([x for x in output if x["type"] in ("CE", "PE")], key=lambda x: x.get("oi") or x.get("volume") or 0, reverse=True)[:50]
     result = futures + options
     for i, row in enumerate(result, 1):
         row["rank"] = i
     return result[:100]
 
 
-def _nearest_live_future(rows, matcher):
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    candidates = []
+def compare_bonds():
+    rows = [
+        x for x in instruments()
+        if x.get("segment") in ("NSE_EQ", "BSE_EQ")
+        and x.get("instrument_type") == "EQ"
+        and any(word in (
+            str(x.get("name", "")).upper() + " " + str(x.get("trading_symbol", "")).upper()
+        ) for word in ("BOND", "GILT", "SDL", "GSEC", "BHARAT"))
+    ][:160]
+    quotes = _quotes([_instrument_key(r) for r in rows])
+    output = []
     for row in rows:
-        if row.get("instrument_type") != "FUT" or not matcher(row):
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
             continue
-        expiry_ms = _parse_expiry(row.get("expiry"))
-        if expiry_ms is None or expiry_ms < now_ms:
+        output.append({
+            "rank": 0,
+            "name": row.get("short_name") or row.get("name") or row.get("trading_symbol"),
+            "symbol": row.get("trading_symbol"),
+            "instrument_key": key,
+            "price": round(ltp, 4),
+            "today_change": round(change, 2) if change is not None else None,
+            "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
+            "year_high": q.get("year_high"),
+            "year_low": q.get("year_low"),
+            "source": "Upstox market quote",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
+    for i, row in enumerate(output[:50], 1):
+        row["rank"] = i
+    return output[:50]
+
+
+def compare_commodities():
+    rows = _active_rows({"MCX_FO"}, {"FUT"})
+    quotes = _quotes([_instrument_key(r) for r in rows[:250]])
+    output = []
+    for row in rows[:250]:
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
             continue
-        item = dict(row)
-        item["_expiry_ms"] = expiry_ms
-        candidates.append(item)
-    return min(candidates, key=lambda x: x["_expiry_ms"]) if candidates else None
+        output.append({
+            "rank": 0,
+            "name": row.get("trading_symbol") or row.get("name"),
+            "symbol": row.get("trading_symbol"),
+            "instrument_key": key,
+            "price": round(ltp, 4),
+            "today_change": round(change, 2) if change is not None else None,
+            "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
+            "year_high": q.get("year_high"),
+            "year_low": q.get("year_low"),
+            "underlying": row.get("underlying_symbol"),
+            "source": "Upstox market quote",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
+    for i, row in enumerate(output[:50], 1):
+        row["rank"] = i
+    return output[:50]
+
+
+def compare_gold():
+    rows = [x for x in _active_rows({"MCX_FO"}, {"FUT"}) if "GOLD" in (
+        str(x.get("underlying_symbol", "")).upper() + " " + str(x.get("name", "")).upper()
+    )]
+    rows.sort(key=lambda x: x.get("_expiry_ms") or 0)
+    rows = rows[:5]
+    quotes = _quotes([_instrument_key(r) for r in rows])
+    output = []
+    for row in rows:
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
+            continue
+        output.append({
+            "rank": len(output) + 1,
+            "name": "Gold",
+            "symbol": row.get("trading_symbol"),
+            "instrument_key": key,
+            "price": round(ltp, 2),
+            "today_change": round(change, 2) if change is not None else None,
+            "unit": "per exchange contract",
+            "expiry": row.get("expiry"),
+            "source": "Upstox MCX market quote",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return output
+
+
+def compare_currency():
+    rows = _active_rows({"NCD_FO", "BCD_FO"}, {"FUT"})
+    rows = [r for r in rows if r.get("underlying_type") == "CUR"]
+    quotes = _quotes([_instrument_key(r) for r in rows[:150]])
+    output = []
+    for row in rows[:150]:
+        key = _instrument_key(row)
+        q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
+        ltp, change = _quote_value(q)
+        if ltp is None:
+            continue
+        output.append({
+            "rank": 0,
+            "name": row.get("trading_symbol") or row.get("name"),
+            "symbol": row.get("trading_symbol"),
+            "instrument_key": key,
+            "price": round(ltp, 4),
+            "today_change": round(change, 2) if change is not None else None,
+            "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
+            "year_high": q.get("year_high"),
+            "year_low": q.get("year_low"),
+            "underlying": row.get("underlying_symbol"),
+            "source": "Upstox currency market quote",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
+    for i, row in enumerate(output[:50], 1):
+        row["rank"] = i
+    return output[:50]
+
+
+def compare_mutual_funds(limit=100):
+    rows = []
+    for row in mutual_fund_instruments():
+        if not row.get("purchase_allowed", True):
+            continue
+        name = str(row.get("name", ""))
+        plan = str(row.get("plan", "")).upper()
+        dividend_type = str(row.get("dividend_type", "")).lower()
+        if plan and plan != "DIRECT":
+            continue
+        if dividend_type and "growth" not in dividend_type and "growth" not in name.lower():
+            continue
+        rows.append(row)
+
+    def quality(row):
+        scheme_type = str(row.get("scheme_type", "")).upper()
+        score = 0
+        for term in ("EQUITY", "HYBRID", "DEBT", "ELSS", "INDEX"):
+            if term in scheme_type:
+                score += 1
+        return score
+
+    rows.sort(key=lambda x: (quality(x), float(x.get("last_price") or 0)), reverse=True)
+    output = []
+    seen = set()
+    for row in rows:
+        key = row.get("instrument_key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append({
+            "name": row.get("name"),
+            "scheme_code": key,
+            "symbol": key,
+            "instrument_key": key,
+            "latest_nav": row.get("last_price"),
+            "latest_date": row.get("last_price_date"),
+            "scheme_type": row.get("scheme_type"),
+            "plan": row.get("plan"),
+            "dividend_type": row.get("dividend_type"),
+            "source": "Upstox mutual-fund instrument master",
+        })
+        if len(output) >= limit:
+            break
+    return output
+
+
+def compare_fds():
+    # Upstox's documented market/instrument APIs do not expose bank FD-rate
+    # tables, so FD rates intentionally use a small official-bank fallback.
+    return [
+        {"bank": "SBI", "tenor": "1 year to <2 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-06-16", "source": "Official SBI retail term-deposit table"},
+        {"bank": "HDFC Bank", "tenor": "1 year to <15 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-08-19", "source": "Official HDFC Bank FD rate page"},
+        {"bank": "PNB", "tenor": "1 year", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-06-18", "source": "Official PNB domestic term-deposit table"},
+        {"bank": "Canara Bank", "tenor": "1 year & above to 1 year 3 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2025-08-07", "source": "Official Canara Bank deposit-rate page"},
+        {"bank": "Axis Bank", "tenor": "1 year–1 year 10 days", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-09-26", "source": "Official Axis Bank FD table; verify before booking"},
+        {"bank": "ICICI Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live ICICI rate"},
+        {"bank": "Bank of India", "tenor": "1 year to <3 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live BOI rate"},
+        {"bank": "Bank of Baroda", "tenor": "1 year", "rate": 6.25, "senior_rate": 7.25, "effective": "2026-09", "source": "Official-rate fallback; verify live BOB rate"},
+        {"bank": "Indian Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Indian Bank rate"},
+        {"bank": "Kotak Mahindra Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Kotak rate"},
+    ]
+
+
+def tracking_universe():
+    stock_rows = _eq_instruments()
+    fno_rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
+    if fno_rows:
+        expiries = [r["_expiry_ms"] for r in fno_rows if r.get("_expiry_ms")]
+        if expiries:
+            nearest = min(expiries)
+            fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
+    fno_rows = fno_rows[:100]
+
+    bond_rows = [
+        x for x in instruments()
+        if x.get("segment") in ("NSE_EQ", "BSE_EQ")
+        and x.get("instrument_type") == "EQ"
+        and any(word in (
+            str(x.get("name", "")).upper() + " " + str(x.get("trading_symbol", "")).upper()
+        ) for word in ("BOND", "GILT", "SDL", "GSEC", "BHARAT"))
+    ][:50]
+
+    return {
+        "stocks": [x.get("trading_symbol") or x.get("short_name") or x.get("name") for x in stock_rows[:100]],
+        "fno": [x.get("trading_symbol") or x.get("name") for x in fno_rows],
+        "bonds": [x.get("trading_symbol") or x.get("short_name") or x.get("name") for x in bond_rows],
+    }
 
 
 def market_now():
-    """Return the live market cards used by the homepage."""
-    all_rows = instruments()
     targets = [
         ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
         ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
@@ -267,30 +460,15 @@ def market_now():
         ("TCS", "NSE_EQ|INE467B01029", "equity"),
     ]
 
-    gold_row = _nearest_live_future(
-        [x for x in all_rows if x.get("segment") == "MCX_FO"],
-        lambda x: "GOLD" in str(x.get("underlying_symbol", "")).upper()
-        or "GOLD" in str(x.get("name", "")).upper(),
-    )
-    if gold_row:
-        targets.append(("Gold", gold_row.get("instrument_key", ""), "commodity"))
+    gold = compare_gold()
+    if gold:
+        targets.append(("Gold", gold[0]["instrument_key"], "commodity"))
 
-    fx_rows = [
-        x for x in all_rows
-        if x.get("segment") in ("NSE_FO", "BCD_FO", "NCD_FO")
-    ]
-    usd_row = _nearest_live_future(
-        fx_rows,
-        lambda x: any(
-            term in str(x.get(k, "")).upper()
-            for k in ("trading_symbol", "name", "underlying_symbol")
-            for term in ("USDINR", "USD/INR")
-        ),
-    )
-    if usd_row:
-        targets.append(("USD/INR", usd_row.get("instrument_key", ""), "currency"))
+    usd = [x for x in compare_currency() if "USDINR" in str(x.get("symbol", "")).upper() or "USDINR" in str(x.get("underlying", "")).upper()]
+    if usd:
+        targets.append(("USD/INR", usd[0]["instrument_key"], "currency"))
 
-    quotes = _quotes([key for _, key, _ in targets if key])
+    quotes = _quotes([k for _, k, _ in targets])
     output = []
     for label, key, kind in targets:
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
@@ -302,101 +480,8 @@ def market_now():
             "value": round(ltp, 4 if kind in ("currency", "commodity") else 2),
             "today_change": round(change, 2) if change is not None else None,
             "kind": kind,
-            "unit": None,
+            "unit": "/10g" if label == "Gold" else "/$" if label == "USD/INR" else None,
             "freshness": "live",
             "instrument_key": key,
         })
     return output[:8]
-
-
-def compare_bonds():
-    rows = [
-        x for x in instruments()
-        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
-    ]
-    bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
-    rows = [
-        x for x in rows
-        if any(
-            word in str(x.get("name", "")).upper()
-            or word in str(x.get("trading_symbol", "")).upper()
-            for word in bond_words
-        )
-    ][:160]
-
-    quotes = _quotes([x["instrument_key"] for x in rows])
-    output = []
-    for row in rows:
-        q = quotes.get(row["instrument_key"].replace("|", ":")) or {}
-        ltp, change = _quote_value(q)
-        if ltp is None:
-            continue
-        output.append({
-            "rank": 0,
-            "name": row.get("short_name") or row.get("name") or row.get("trading_symbol"),
-            "symbol": row.get("trading_symbol"),
-            "instrument_key": row.get("instrument_key"),
-            "price": round(ltp, 4),
-            "today_change": round(change, 2) if change is not None else None,
-            "volume": q.get("volume"),
-            "year_high": q.get("year_high"),
-            "year_low": q.get("year_low"),
-            "source": "Listed bond/debt quote feed",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
-    output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
-    for i, row in enumerate(output[:50], 1):
-        row["rank"] = i
-    return output[:50]
-
-
-def compare_fds():
-    """Comparable ~1-year public FD reference rates."""
-    return [
-        {"bank": "SBI", "tenor": "1 year to <2 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-06-16", "source": "SBI official retail domestic term-deposit table"},
-        {"bank": "HDFC Bank", "tenor": "1 year to <15 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-08-19", "source": "HDFC Bank official FD rate page"},
-        {"bank": "PNB", "tenor": "1 year", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-06-18", "source": "PNB official domestic term-deposit table"},
-        {"bank": "Canara Bank", "tenor": "1 year & above to 1 year 3 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2025-08-07", "source": "Canara Bank official deposit interest-rate page"},
-        {"bank": "Axis Bank", "tenor": "1 year–1 year 10 days", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-09-26", "source": "Axis Bank official Fixed Deposits Plus table; verify product/tenor before booking"},
-        {"bank": "ICICI Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Bank rate reference; verify live ICICI rate before booking"},
-        {"bank": "Bank of India", "tenor": "1 year to <3 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Bank rate reference; verify live BOI rate before booking"},
-        {"bank": "Bank of Baroda", "tenor": "1 year", "rate": 6.25, "senior_rate": 7.25, "effective": "2026-09", "source": "Bank rate reference; verify live BOB rate before booking"},
-        {"bank": "Indian Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Bank rate reference; verify live Indian Bank rate before booking"},
-        {"bank": "Kotak Mahindra Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Bank rate reference; verify live Kotak rate before booking"},
-    ]
-
-
-def tracking_universe():
-    """Return configured names without requiring quote authentication."""
-    all_rows = instruments()
-    stocks = _eq_instruments()
-    fno_rows = _fno_instruments()
-    futures = [x for x in fno_rows if x.get("instrument_type") == "FUT"]
-    options = [x for x in fno_rows if x.get("instrument_type") in ("CE", "PE")]
-    fno = futures[:50] + options[:50]
-
-    eq_rows = [
-        x for x in all_rows
-        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
-    ]
-    bond_words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT")
-    bonds = [
-        x for x in eq_rows
-        if any(
-            word in str(x.get("name", "")).upper()
-            or word in str(x.get("trading_symbol", "")).upper()
-            for word in bond_words
-        )
-    ][:50]
-
-    return {
-        "stocks": [
-            x.get("trading_symbol") or x.get("short_name") or x.get("name")
-            for x in stocks
-        ],
-        "fno": [x.get("trading_symbol") or x.get("name") for x in fno],
-        "bonds": [
-            x.get("trading_symbol") or x.get("short_name") or x.get("name")
-            for x in bonds
-        ],
-    }
