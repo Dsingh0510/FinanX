@@ -252,21 +252,30 @@ def compare_fno():
 
 
 def _bond_instruments(limit=50):
-    words = ("BOND", "GILT", "SDL", "GSEC", "BHARAT", "NCD", "DEBENTURE", "SECURITIES")
-    rows = [
-        x for x in instruments()
-        if x.get("segment") in ("NSE_EQ", "BSE_EQ")
-        and x.get("instrument_type") == "EQ"
-        and any(
-            word in (
-                str(x.get("name", "")).upper()
-                + " "
-                + str(x.get("trading_symbol", "")).upper()
-            )
-            for word in words
+    """Find listed debt-like instruments from the Upstox equity universe."""
+    words = (
+        "BOND", "GILT", "SDL", "GSEC", "BHARAT", "NCD", "DEBENTURE",
+        "SECURITY", "TBILL", "T-BILL", "SGB", "SOVEREIGN", "TREASURY",
+    )
+    rows = []
+    for x in instruments():
+        if x.get("segment") not in ("NSE_EQ", "BSE_EQ"):
+            continue
+        if x.get("instrument_type") not in ("EQ", "BOND"):
+            continue
+        text = (
+            str(x.get("name", "")).upper()
+            + " "
+            + str(x.get("trading_symbol", "")).upper()
         )
-    ]
+        if any(word in text for word in words):
+            rows.append(x)
+    rows.sort(key=lambda x: (
+        0 if "GSEC" in str(x.get("name", "")).upper() else 1,
+        str(x.get("trading_symbol", "")).upper(),
+    ))
     return rows[:limit]
+
 
 
 def history_universe():
@@ -588,14 +597,17 @@ def _nearest_future_by_terms(rows, terms):
 
 
 def market_now():
-    """Build a broad live Market Now board from the Upstox instrument master."""
+    """Build a broad Market Now board; Upstox quote first, instrument price fallback."""
     targets = []
     seen = set()
+    last_prices = {}
 
-    def add(label, key, kind, unit=None):
+    def add(label, key, kind, unit=None, fallback_price=None):
         if not key or key in seen:
             return
         seen.add(key)
+        if fallback_price is not None:
+            last_prices[key] = fallback_price
         targets.append((label, key, kind, unit))
 
     # Indices
@@ -604,26 +616,33 @@ def market_now():
         ("NIFTY Bank", ("NIFTY BANK", "BANK NIFTY")),
         ("NIFTY IT", ("NIFTY IT",)),
         ("India VIX", ("INDIA VIX",)),
-        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100",)),
-        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100",)),
+        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100", "NIFTY MIDCAP")),
+        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100", "NIFTY SMALLCAP")),
     ]:
         add(label, _index_key_from_terms(*terms), "index")
 
-    # Selected equities
-    eq_rows = [x for x in instruments() if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
+    # Equities
+    eq_rows = [
+        x for x in instruments()
+        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
+    ]
     by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
     for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN", "ICICIBANK"):
         row = by_symbol.get(symbol)
         if row:
-            add(row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity")
+            try:
+                master_price = float(row.get("last_price")) if row.get("last_price") is not None else None
+            except (TypeError, ValueError):
+                master_price = None
+            add(row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity", None, master_price)
 
     all_futures = [
         x for x in instruments()
         if str(x.get("instrument_type", "")).upper() == "FUT"
     ]
 
-    # Commodities: search by instrument text, not just one segment label.
-    commodity_specs = [
+    # Commodities
+    for label, terms, unit in [
         ("Gold", ("GOLD",), "/10g"),
         ("Silver", ("SILVER",), None),
         ("Crude Oil", ("CRUDEOIL", "CRUDE OIL", "CRUDE"), None),
@@ -631,50 +650,67 @@ def market_now():
         ("Natural Gas", ("NATURALGAS", "NATURAL GAS", "NATGAS"), None),
         ("Zinc", ("ZINC",), None),
         ("Aluminium", ("ALUMINIUM", "ALUMINI"), None),
-    ]
-    for label, terms, unit in commodity_specs:
+    ]:
         rows = [
             x for x in all_futures
-            if str(x.get("segment", "")).upper().startswith("MCX")
+            if str(x.get("segment", "")).upper() == "MCX_FO"
             and any(term in (
                 str(x.get("underlying_symbol", "")).upper()
-                + " " + str(x.get("name", "")).upper()
-                + " " + str(x.get("trading_symbol", "")).upper()
+                + " "
+                + str(x.get("name", "")).upper()
+                + " "
+                + str(x.get("trading_symbol", "")).upper()
             ) for term in terms)
         ]
         item = _find_nearest_future(rows, lambda x: True)
         if item:
-            add(label, _instrument_key(item), "commodity", unit)
+            try:
+                master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
+            except (TypeError, ValueError):
+                master_price = None
+            add(label, _instrument_key(item), "commodity", unit, master_price)
 
-    # Currencies: match the pair in the symbol/text regardless of which
-    # currency-futures segment name Upstox uses.
-    currency_specs = [
+    # Currencies
+    for label, terms in [
         ("USD/INR", ("USDINR",)),
         ("EUR/INR", ("EURINR",)),
         ("GBP/INR", ("GBPINR",)),
         ("JPY/INR", ("JPYINR",)),
         ("AUD/INR", ("AUDINR",)),
         ("CNY/INR", ("CNYINR",)),
-    ]
-    for label, terms in currency_specs:
+    ]:
         rows = [
             x for x in all_futures
             if any(term in (
                 str(x.get("underlying_symbol", "")).upper()
-                + " " + str(x.get("name", "")).upper()
-                + " " + str(x.get("trading_symbol", "")).upper()
+                + " "
+                + str(x.get("name", "")).upper()
+                + " "
+                + str(x.get("trading_symbol", "")).upper()
             ) for term in terms)
+            and str(x.get("instrument_type", "")).upper() == "FUT"
         ]
         item = _find_nearest_future(rows, lambda x: True)
         if item:
-            add(label, _instrument_key(item), "currency")
+            try:
+                master_price = float(item.get("last_price")) if item.get("last_price") is not None else None
+            except (TypeError, ValueError):
+                master_price = None
+            add(label, _instrument_key(item), "currency", None, master_price)
 
-    # Listed bond/debt instruments.
-    for row in _bond_instruments(20):
+    # Listed bonds/debt. Keep five distinct names.
+    bond_rows = _bond_instruments(25)
+    for row in bond_rows:
+        try:
+            master_price = float(row.get("last_price")) if row.get("last_price") is not None else None
+        except (TypeError, ValueError):
+            master_price = None
         add(
             row.get("short_name") or row.get("name") or row.get("trading_symbol") or "Listed Bond",
             _instrument_key(row),
             "bond",
+            None,
+            master_price,
         )
         if sum(1 for x in targets if x[2] == "bond") >= 5:
             break
@@ -684,15 +720,31 @@ def market_now():
     for label, key, kind, unit in targets:
         q = _lookup_quote(quotes, key)
         ltp, change = _quote_value(q)
+        freshness = "live"
         if ltp is None:
+            ltp = last_prices.get(key)
+            change = None
+            freshness = "latest"
+        if ltp is None:
+            # Keep the entity visible even if today's quote is temporarily
+            # unavailable; never fabricate a price.
+            output.append({
+                "label": label,
+                "value": None,
+                "today_change": None,
+                "kind": kind,
+                "unit": unit,
+                "freshness": "unavailable",
+                "instrument_key": key,
+            })
             continue
         output.append({
             "label": label,
-            "value": round(ltp, 4 if kind in ("currency", "commodity") else 2),
+            "value": round(float(ltp), 4 if kind in ("currency", "commodity") else 2),
             "today_change": round(change, 2) if change is not None else None,
             "kind": kind,
             "unit": unit,
-            "freshness": "live",
+            "freshness": freshness,
             "instrument_key": key,
         })
 
