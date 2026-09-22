@@ -292,9 +292,9 @@ def update_amfi_metrics() -> dict:
         if not selected:
             raise RuntimeError('No representative mutual-fund schemes could be loaded')
 
-        # Save latest NAV immediately, even if history is temporarily unavailable.
-        for row in selected:
-            save_mf_scheme(row)
+        # Batch-save the full 100-fund latest NAV universe.
+        from database import save_mf_schemes_bulk, save_mf_metrics_bulk
+        save_mf_schemes_bulk(selected)
 
         codes = {x['scheme_code'] for x in selected}
         history = {code: {} for code in codes}
@@ -306,7 +306,7 @@ def update_amfi_metrics() -> dict:
 
         history = _fallback_history_all(codes, history)
 
-        count = 0
+        metric_rows = []
         history_complete = 0
         for row in selected:
             h = history.get(row['scheme_code'], {})
@@ -321,7 +321,7 @@ def update_amfi_metrics() -> dict:
                     return None
                 return round(((latest_nav / base) ** (1 / years) - 1) * 100, 2)
 
-            save_mf_metric({
+            metric_rows.append({
                 'scheme_code': row['scheme_code'],
                 'scheme_name': row['scheme_name'],
                 'latest_nav': latest_nav,
@@ -331,7 +331,8 @@ def update_amfi_metrics() -> dict:
                 'return_5y': cagr('5y', 5),
                 'source': 'AMFI official NAV/history' if len(h) else 'AMFI NAV only',
             })
-            count += 1
+        save_mf_metrics_bulk(metric_rows)
+        count = len(metric_rows)
 
         source_note = 'AMFI official NAV + history'
         if history_error:
