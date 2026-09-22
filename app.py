@@ -173,10 +173,9 @@ def market():
 @app.get('/api/market/highlights')
 def market_highlights():
     try:
-        return jsonify({'items': _engine().market_highlights()})
+        return jsonify({'items': vercel_market.market_highlights()})
     except Exception:
         return jsonify({'items': []})
-
 
 @app.post('/api/market/refresh')
 def refresh_market():
