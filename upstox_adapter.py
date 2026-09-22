@@ -273,17 +273,33 @@ def _load_live_universe() -> dict:
             except Exception:
                 snapshot[key] = []
 
-    # Fallback sources are only touched when Upstox could not supply that
-    # segment. Mutual fund history is handled separately as a second-stage
-    # fallback; FD rates already use the official bank registry above.
+    # Fallback sources are touched only when the primary Upstox segment call
+    # fails or returns no usable records.
+    snapshot["_fallback"] = {}
+    if any(not snapshot.get(key) for key in ("stocks", "fno", "bonds", "mutual-funds", "gold", "commodities", "currency")):
+        try:
+            import vercel_market
+            fallback = vercel_market.category_market_analysis()
+            for key in ("stocks", "fno", "bonds", "mutual-funds", "gold", "commodities", "currency"):
+                if snapshot.get(key):
+                    continue
+                item = fallback.get(key) or {}
+                rows = item.get("analyzed_options") or []
+                if rows:
+                    snapshot[key] = rows
+                    snapshot["_fallback"][key] = item.get("source") or "fallback source"
+        except Exception:
+            pass
+
+    # AMFI is used only as a second-stage fallback for mutual-fund history.
     if not snapshot.get("mutual-funds"):
         try:
-            snapshot["mutual-funds"] = []
             from amfi_data import tracking_fund_universe
             snapshot["mutual-funds"] = [
                 {"name": name, "source": "AMFI fallback"}
                 for name in tracking_fund_universe(100)
             ]
+            snapshot["_fallback"]["mutual-funds"] = "AMFI fallback"
         except Exception:
             pass
 
@@ -391,43 +407,43 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "bonds": {
-            "status": "upstox",
-            "source": "Upstox listed bond/debt quotes",
+                "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("bonds") or "Upstox listed bond/debt quotes",
             "metrics": bond_metrics,
             "analyzed_options": bonds,
             "updated_at": now,
         },
         "mutual-funds": {
-            "status": "upstox",
-            "source": "Upstox mutual-fund instrument master; historical fallback only where needed",
+            "status": "fallback" if "mutual-funds" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("mutual-funds") or "Upstox mutual-fund instrument master; historical fallback only where needed",
             "metrics": fund_metrics,
             "analyzed_options": funds,
             "updated_at": now,
         },
         "gold": {
-            "status": "upstox",
-            "source": "Upstox MCX gold contracts",
+            "status": "fallback" if "gold" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("gold") or "Upstox MCX gold contracts",
             "metrics": gold_metrics,
             "analyzed_options": gold,
             "updated_at": now,
         },
         "commodities": {
-            "status": "upstox",
-            "source": "Upstox MCX commodity contracts",
+            "status": "fallback" if "commodities" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("commodities") or "Upstox MCX commodity contracts",
             "metrics": commodity_metrics,
             "analyzed_options": commodities,
             "updated_at": now,
         },
         "currency": {
-            "status": "upstox",
-            "source": "Upstox currency futures",
+            "status": "fallback" if "currency" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("currency") or "Upstox currency futures",
             "metrics": currency_metrics,
             "analyzed_options": currency,
             "updated_at": now,
         },
         "fno": {
-            "status": "upstox",
-            "source": "Upstox F&O market quotes",
+            "status": "fallback" if "fno" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("fno") or "Upstox F&O market quotes",
             "metrics": {
                 "available": False,
                 "sample_size": len(fno),
@@ -441,8 +457,8 @@ def category_market_analysis() -> dict:
             "updated_at": now,
         },
         "stocks": {
-            "status": "upstox",
-            "source": "Upstox full market quotes + historical candles",
+            "status": "fallback" if "stocks" in snapshot.get("_fallback", {}) else "upstox",
+            "source": snapshot.get("_fallback", {}).get("stocks") or "Upstox full market quotes + historical candles",
             "metrics": stock_metrics,
             "analyzed_options": stocks,
             "updated_at": now,
