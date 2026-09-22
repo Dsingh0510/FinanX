@@ -8,13 +8,11 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, render_template, request
 
 from allocation_engine import ASSET_INFO, build_portfolio
-from database import init_database
 from recommendation_engine import build_market_adjusted_plan
 import upstox_adapter
 import market_universe
 
 app = Flask(__name__)
-init_database(app)
 logger = logging.getLogger(__name__)
 
 _ALLOWED_RISKS = {"low", "moderate", "high"}

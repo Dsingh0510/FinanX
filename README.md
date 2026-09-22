@@ -29,7 +29,6 @@ Bank FD rates remain a separate official-bank rate registry because FD deposit r
 
 ```text
 UPSTOX_ANALYTICS_TOKEN=your_token
-FINANX_DB=finanx.db
 HOST=0.0.0.0
 PORT=5000
 ```
