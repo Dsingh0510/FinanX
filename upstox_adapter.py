@@ -530,61 +530,45 @@ def category_market_analysis() -> dict:
     return result
 
 
+def _fallback_market_cards(missing_labels):
+    """Use a public reference source only for labels Upstox could not supply."""
+    out = {}
+    try:
+        import vercel_market
+        if any(x in missing_labels for x in ("NIFTY 50", "Gold", "USD/INR")):
+            for row in vercel_market.market_highlights():
+                if row.get("label") in missing_labels:
+                    row = dict(row)
+                    row["freshness"] = "fallback"
+                    out[row["label"]] = row
+    except Exception:
+        pass
+    return out
+
+
 def market_highlights() -> list[dict]:
-    out = []
-    try:
-        out.extend(market_now())
-    except Exception:
-        pass
-
-    # Fund card: use the Upstox MF master first.
-    try:
-        funds = compare_mutual_funds(100)
-        fund = next(
-            (x for x in funds if "HDFC Flexi Cap Fund" in str(x.get("name", ""))
-             and x.get("latest_nav") is not None),
-            None,
-        )
-        if fund:
-            out.append({
-                "label": "HDFC Flexi Cap Fund • Direct Growth",
-                "value": round(float(fund["latest_nav"]), 4),
-                "today_change": None,
-                "kind": "mutual_fund",
-                "unit": "Latest NAV",
-                "date": fund.get("latest_date"),
-                "freshness": "daily",
-            })
-    except Exception:
-        pass
-
-    try:
-        fd = compare_fds()[0]
-        out.append({
-            "label": "SBI FD • 1 Year",
-            "value": float(fd["rate"]),
-            "today_change": None,
-            "kind": "fd",
-            "unit": "% p.a.",
-            "date": fd.get("effective"),
-            "freshness": "rate-reference",
-        })
-    except Exception:
-        pass
-
-    preferred = [
+    wanted = [
         "NIFTY 50",
         "Gold",
         "USD/INR",
         "NIFTY Bank",
         "NIFTY IT",
+        "Reliance Industries",
         "HDFC Bank",
-        "HDFC Flexi Cap Fund • Direct Growth",
-        "SBI FD • 1 Year",
+        "TCS",
+        "India VIX",
     ]
-    by = {x.get("label"): x for x in out if x.get("label")}
-    return [by[x] for x in preferred if x in by][:8]
 
+    out = []
+    try:
+        live = {x.get("label"): x for x in market_now() if x.get("label")}
+        missing = [label for label in wanted if label not in live]
+        live.update(_fallback_market_cards(missing))
+        out = [live[label] for label in wanted if label in live]
+    except Exception:
+        out = []
+
+    return out[:9]
 
 def market_snapshot() -> dict:
     analysis = category_market_analysis()
