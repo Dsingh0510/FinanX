@@ -710,18 +710,18 @@ def _fallback_market_cards(missing_labels):
 
 
 def market_highlights() -> list[dict]:
-    wanted = [
-        "NIFTY 50", "Gold", "USD/INR",
-        "NIFTY Bank", "NIFTY IT",
-        "Reliance Industries", "HDFC Bank", "TCS", "Infosys",
-    ]
     try:
-        live = {x.get("label"): x for x in market_now() if x.get("label")}
+        items = market_now()
     except Exception:
-        live = {}
-    missing = [x for x in wanted if x not in live]
-    live.update(_fallback_market_cards(missing))
-    return [live[x] for x in wanted if x in live][:9]
+        items = []
+
+    have = {x.get("label") for x in items if x.get("label")}
+    missing_core = [x for x in ("NIFTY 50", "Gold", "USD/INR") if x not in have]
+    if missing_core:
+        fallbacks = _fallback_market_cards(missing_core)
+        items.extend(fallbacks[label] for label in missing_core if label in fallbacks)
+
+    return items
 
 def market_snapshot() -> dict:
     analysis = category_market_analysis(allow_stale=True)
