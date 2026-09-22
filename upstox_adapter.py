@@ -26,6 +26,7 @@ _TIMEOUT = 8
 _HISTORY_TIMEOUT = 10
 _SNAPSHOT_TTL = 30 * 60
 _ANALYSIS_TTL = 30 * 60
+_HISTORY_TTL = 24 * 60 * 60
 _CACHE = {}
 _SNAPSHOT = None
 _SNAPSHOT_AT = 0.0
@@ -84,7 +85,7 @@ def _series(instrument_key: str, unit: str = "months") -> list[tuple[datetime, f
         rows.sort(key=lambda x: x[0])
         return rows
 
-    return _cached(f"history:{unit}:" + instrument_key, load, _ANALYSIS_TTL)
+    return _cached(f"history:{unit}:" + instrument_key, load, _HISTORY_TTL)
 
 
 def _metrics(rows: list[tuple[datetime, float]]) -> dict:
@@ -223,7 +224,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         return item
 
     out = []
-    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+    with ThreadPoolExecutor(max_workers=min(20, len(candidates))) as pool:
         futures = [pool.submit(work, row) for row in candidates]
         for future in as_completed(futures):
             try:
