@@ -297,6 +297,34 @@ def _load_live_universe() -> dict:
             except Exception:
                 snapshot[key] = []
 
+    # Enrich Upstox mutual-fund rows with cached historical NAV returns.
+    # Upstox remains primary for the live fund universe/latest NAV; AMFI is used
+    # only for historical-return fields that Upstox's MF instrument master does
+    # not expose.
+    if snapshot.get("mutual-funds"):
+        try:
+            from database import mutual_fund_metrics
+            cached = mutual_fund_metrics()
+            if not cached:
+                from amfi_data import update_amfi_metrics_fast
+                update_amfi_metrics_fast()
+                cached = mutual_fund_metrics()
+            by_name = {
+                str(x.get("scheme_name", "")).strip().lower(): x
+                for x in cached
+                if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+            }
+            for row in snapshot["mutual-funds"]:
+                key = str(row.get("name", "")).strip().lower()
+                hist = by_name.get(key)
+                if hist:
+                    row["return_1y"] = hist.get("return_1y")
+                    row["return_3y"] = hist.get("return_3y")
+                    row["return_5y"] = hist.get("return_5y")
+                    row["history_source"] = hist.get("source") or "AMFI cached history"
+        except Exception:
+            pass
+
     # Fallback sources are touched only when the primary Upstox segment call
     # fails or returns no usable records.
     snapshot["_fallback"] = {}
