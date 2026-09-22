@@ -68,6 +68,27 @@ def save_daily_history(symbol: str, rows: list[tuple[str, float | None, float | 
     conn.close()
 
 
+def save_mf_schemes_bulk(rows: list[dict]) -> None:
+    if not rows:
+        return
+    conn = connect()
+    conn.executemany(
+        'INSERT INTO mutual_fund_schemes(scheme_code,scheme_name,isin,latest_nav,latest_date,source,updated_at) '
+        'VALUES(?,?,?,?,?,?,?) ON CONFLICT(scheme_code) DO UPDATE SET '
+        'scheme_name=excluded.scheme_name,latest_nav=excluded.latest_nav,latest_date=excluded.latest_date,'
+        'source=excluded.source,updated_at=excluded.updated_at',
+        [
+            (
+                row['scheme_code'], row['scheme_name'], row.get('isin'),
+                row.get('latest_nav'), row.get('latest_date'), row['source'], utc_now()
+            )
+            for row in rows
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
 def save_mf_scheme(row: dict) -> None:
     conn = connect()
     conn.execute(
@@ -79,6 +100,30 @@ def save_mf_scheme(row: dict) -> None:
             row['scheme_code'], row['scheme_name'], row.get('isin'),
             row.get('latest_nav'), row.get('latest_date'), row['source'], utc_now()
         ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_mf_metrics_bulk(rows: list[dict]) -> None:
+    if not rows:
+        return
+    conn = connect()
+    conn.executemany(
+        'INSERT INTO mutual_fund_metrics(scheme_code,scheme_name,return_1y,return_3y,return_5y,'
+        'latest_nav,latest_date,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(scheme_code) DO UPDATE SET scheme_name=excluded.scheme_name,'
+        'return_1y=excluded.return_1y,return_3y=excluded.return_3y,return_5y=excluded.return_5y,'
+        'latest_nav=excluded.latest_nav,latest_date=excluded.latest_date,'
+        'updated_at=excluded.updated_at,source=excluded.source',
+        [
+            (
+                row['scheme_code'], row['scheme_name'], row.get('return_1y'),
+                row.get('return_3y'), row.get('return_5y'), row.get('latest_nav'),
+                row.get('latest_date'), utc_now(), row['source']
+            )
+            for row in rows
+        ],
     )
     conn.commit()
     conn.close()
