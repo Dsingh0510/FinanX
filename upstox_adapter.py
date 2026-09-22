@@ -179,30 +179,42 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
 
 
 def _history_for_rows(rows: list[dict], category: str, limit: int | None = None, mf_cache: dict | None = None) -> list[dict]:
-    """Enrich tracked rows only with Upstox historical candles."""
+    """Enrich tracked entities with Upstox history, using stable underlyings when available."""
     if not rows:
         return []
     candidates = list(rows[:limit] if limit is not None else rows)
+
     def work(row):
         item = dict(row)
-        key = row.get("instrument_key") or row.get("symbol")
-        if not key:
-            return item
-        try:
-            with _HISTORY_GATE:
-                metrics = _metrics(_series(key, unit="months"))
-            if metrics.get("available"):
-                item.update(metrics)
-                item["history_source"] = "Upstox historical candles"
-        except Exception:
-            pass
+        primary_key = row.get("instrument_key") or row.get("symbol")
+        underlying_key = row.get("underlying_key")
+        history_candidates = []
+        if primary_key:
+            history_candidates.append((primary_key, "Upstox historical candles"))
+        if underlying_key and underlying_key != primary_key:
+            history_candidates.append((underlying_key, "Underlying market history (Upstox)"))
+
+        for key, source in history_candidates:
+            try:
+                with _HISTORY_GATE:
+                    metrics = _metrics(_series(key, unit="months"))
+                if metrics.get("available"):
+                    item.update(metrics)
+                    item["history_source"] = source
+                    item["history_instrument_key"] = key
+                    return item
+            except Exception:
+                continue
         return item
+
     out = []
     with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
-        futures=[pool.submit(work,row) for row in candidates]
+        futures = [pool.submit(work, row) for row in candidates]
         for future in as_completed(futures):
-            try: out.append(future.result())
-            except Exception: pass
+            try:
+                out.append(future.result())
+            except Exception:
+                pass
     return out
 
 
@@ -229,14 +241,15 @@ def _history_for_fno_underlyings(rows: list[dict], limit: int | None = None) -> 
     }
 
 
-def _category_metrics(rows: list[dict], default_vol: float) -> dict:
+def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int | None = None) -> dict:
     valid = [x for x in rows if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))]
+    total = len(rows) if tracked_count is None else max(int(tracked_count), len(valid))
     result = {
         "available": bool(valid),
         "sample_size": len(valid),
-        "tracked_count": len(rows),
+        "tracked_count": total,
         "history_count": len(valid),
-        "history_coverage": round((len(valid) / len(rows)) * 100, 1) if rows else 0.0,
+        "history_coverage": round((len(valid) / total) * 100, 1) if total else 0.0,
         "return_1y": None,
         "return_3y": None,
         "return_5y": None,
@@ -249,7 +262,7 @@ def _category_metrics(rows: list[dict], default_vol: float) -> dict:
     if result["volatility_annualized"] is None:
         result["volatility_annualized"] = default_vol
     result["average_basis"] = (
-        f"Average of {len(valid)}/{len(rows)} tracked entities" if rows
+        f"Average of {len(valid)}/{total} tracked entities" if total
         else "No tracked history available"
     )
     return result
@@ -391,7 +404,11 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     dec = sum(1 for x in live_changes if x < 0)
     breadth = round(50 + ((adv - dec) / len(live_changes)) * 50, 1) if live_changes else None
 
-    stock_metrics = _category_metrics(history_results.get("stocks", []), 20.0)
+    stock_metrics = _category_metrics(
+        history_results.get("stocks", []),
+        20.0,
+        tracked_count=len(hu.get("stocks", [])),
+    )
     stock_metrics.update({
         "live_sample_size": len(snapshot.get("stocks", [])),
         "advancers": adv,
@@ -399,13 +416,38 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         "live_breadth_score": breadth,
     })
 
-    fund_metrics = _category_metrics(history_results.get("mutual-funds", []), 14.0)
+    fund_metrics = _category_metrics(
+        history_results.get("mutual-funds", []),
+        14.0,
+        tracked_count=len(hu.get("mutual-funds", [])),
+    )
     fund_data_status = "upstox"
 
-    bond_metrics = _category_metrics(history_results.get("bonds", []), 7.0)
-    commodity_metrics = _category_metrics(history_results.get("commodities", []), 25.0)
-    currency_metrics = _category_metrics(history_results.get("currency", []), 12.0)
-    fno_metrics = _category_metrics(list(fno_underlyings.values()), 45.0)
+    bond_metrics = _category_metrics(
+        history_results.get("bonds", []),
+        7.0,
+        tracked_count=len(hu.get("bonds", [])),
+    )
+    commodity_metrics = _category_metrics(
+        history_results.get("commodities", []),
+        25.0,
+        tracked_count=len(hu.get("commodities", [])),
+    )
+    currency_metrics = _category_metrics(
+        history_results.get("currency", []),
+        12.0,
+        tracked_count=len(hu.get("currency", [])),
+    )
+    fno_underlying_count = len({
+        str(row.get("underlying_key"))
+        for row in hu.get("fno", [])
+        if row.get("underlying_key")
+    })
+    fno_metrics = _category_metrics(
+        list(fno_underlyings.values()),
+        45.0,
+        tracked_count=fno_underlying_count,
+    )
     if fno_metrics.get("available"):
         fno_data_status = "upstox-underlying-history"
     else:

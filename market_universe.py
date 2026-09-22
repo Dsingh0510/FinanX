@@ -244,13 +244,17 @@ def _quote_value(row):
     prev = row.get("prev_close_price")
     try:
         ltp = float(ltp)
+        if ltp <= 0:
+            ltp = None
     except (TypeError, ValueError):
         ltp = None
     try:
         prev = float(prev)
+        if prev <= 0:
+            prev = None
     except (TypeError, ValueError):
         prev = None
-    change = ((ltp / prev) - 1) * 100 if ltp is not None and prev else None
+    change = ((ltp / prev) - 1) * 100 if ltp is not None and prev is not None else None
     return ltp, change
 
 
@@ -532,6 +536,7 @@ def compare_commodities():
             "year_high": q.get("year_high"),
             "year_low": q.get("year_low"),
             "underlying": row.get("underlying_symbol"),
+            "underlying_key": row.get("underlying_key"),
             "source": "Upstox market quote",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -564,6 +569,8 @@ def compare_gold():
             "today_change": round(change, 2) if change is not None else None,
             "unit": "per exchange contract",
             "expiry": row.get("expiry"),
+            "underlying": row.get("underlying_symbol"),
+            "underlying_key": row.get("underlying_key"),
             "source": "Upstox MCX market quote",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -592,6 +599,7 @@ def compare_currency():
             "year_high": q.get("year_high"),
             "year_low": q.get("year_low"),
             "underlying": row.get("underlying_symbol"),
+            "underlying_key": row.get("underlying_key"),
             "source": "Upstox currency market quote",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -830,9 +838,16 @@ def market_now():
             add("USD/INR",_instrument_key(item),"currency", "₹/USD")
 
     for label,terms in [
-        ("EUR/INR",("EURINR",)),("GBP/INR",("GBPINR",)),
-        ("JPY/INR",("JPYINR",)),("AUD/INR",("AUDINR",)),("CNY/INR",("CNYINR",)),
+        ("EUR/INR",("EUR INR","EURINR")),
+        ("GBP/INR",("GBP INR","GBPINR")),
+        ("JPY/INR",("JPY INR","JPYINR")),
+        ("AUD/INR",("AUD INR","AUDINR")),
+        ("CNY/INR",("CNY INR","CNYINR")),
     ]:
+        indicator_key = _find_global_indicator_key(*terms)
+        if indicator_key:
+            add(label, indicator_key, "currency", "₹/currency")
+            continue
         rows=[x for x in all_futures if any(term in (
             str(x.get("underlying_symbol","")).upper()+" "
             +str(x.get("name","")).upper()+" "
@@ -841,26 +856,23 @@ def market_now():
               and str(x.get("instrument_type","")).upper()=="FUT"]
         item=_find_nearest_future(rows,lambda x:True)
         if item:
-            add(label,_instrument_key(item),"currency")
+            add(label,_instrument_key(item),"currency", "₹/currency")
 
     for row in _bond_instruments(25):
         symbol=str(row.get("trading_symbol") or "").strip()
         add(row.get("short_name") or row.get("name") or symbol or "Listed Bond",_instrument_key(row),"bond")
         if sum(1 for x in targets if x[2]=="bond")>=5: break
 
-    output_by_key = {}
     quote_targets = [(label, key, kind, unit) for label, key, kind, unit in targets if key]
-    with ThreadPoolExecutor(max_workers=min(8, len(quote_targets) or 1)) as pool:
-        futures = {
-            pool.submit(_quote_one, key): (label, key, kind, unit)
-            for label, key, kind, unit in quote_targets
-        }
-        for future in as_completed(futures):
-            label, key, kind, unit = futures[future]
-            try:
-                output_by_key[key] = future.result()
-            except Exception:
-                output_by_key[key] = {}
+    all_keys = [key for _, key, _, _ in quote_targets]
+    try:
+        quotes = _quotes(all_keys)
+    except Exception:
+        quotes = {}
+    output_by_key = {
+        key: _lookup_quote(quotes, key)
+        for key in all_keys
+    }
 
     output=[]
     for label,key,kind,unit in targets:
