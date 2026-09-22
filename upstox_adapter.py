@@ -242,8 +242,8 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None)
     return out
 
 
-def _history_for_fno_underlyings(rows: list[dict], limit: int = 6) -> dict:
-    """Get historical performance for the underlying assets of the leading F&O contracts."""
+def _history_for_fno_underlyings(rows: list[dict], limit: int | None = None) -> dict:
+    """Average history of the unique underlyings represented by tracked F&O contracts."""
     unique = {}
     for row in rows:
         key = row.get("underlying_key")
@@ -254,8 +254,10 @@ def _history_for_fno_underlyings(rows: list[dict], limit: int = 6) -> dict:
                 "name": row.get("underlying") or row.get("name") or key,
                 "volume": row.get("volume") or row.get("oi") or 0,
             }
-    shortlisted = sorted(unique.values(), key=lambda x: x.get("volume") or 0, reverse=True)[:limit]
-    history = _history_for_rows(shortlisted, "stocks", limit)
+    shortlisted = sorted(unique.values(), key=lambda x: x.get("volume") or 0, reverse=True)
+    if limit is not None:
+        shortlisted = shortlisted[:limit]
+    history = _history_for_rows(shortlisted, "stocks", None)
     return {
         str(row.get("instrument_key")): row
         for row in history
