@@ -24,8 +24,8 @@ from market_universe import (
 BASE = "https://api.upstox.com/v3"
 _TIMEOUT = 8
 _HISTORY_TIMEOUT = 10
-_SNAPSHOT_TTL = 8 * 60
-_ANALYSIS_TTL = 5 * 60
+_SNAPSHOT_TTL = 30 * 60
+_ANALYSIS_TTL = 30 * 60
 _CACHE = {}
 _SNAPSHOT = None
 _SNAPSHOT_AT = 0.0
@@ -63,12 +63,12 @@ def _cached(key: str, factory, ttl: float):
     return value
 
 
-def _series(instrument_key: str) -> list[tuple[datetime, float]]:
+def _series(instrument_key: str, unit: str = "months") -> list[tuple[datetime, float]]:
     def load():
         end = date.today()
         start = end - timedelta(days=365 * 5 + 45)
         encoded = quote(instrument_key, safe="")
-        url = f"{BASE}/historical-candle/{encoded}/weeks/1/{end.isoformat()}/{start.isoformat()}"
+        url = f"{BASE}/historical-candle/{encoded}/{unit}/1/{end.isoformat()}/{start.isoformat()}"
         data = _get(url, timeout=_HISTORY_TIMEOUT).get("data") or {}
         rows = []
         for candle in data.get("candles") or []:
@@ -84,7 +84,7 @@ def _series(instrument_key: str) -> list[tuple[datetime, float]]:
         rows.sort(key=lambda x: x[0])
         return rows
 
-    return _cached("history:" + instrument_key, load, _ANALYSIS_TTL)
+    return _cached(f"history:{unit}:" + instrument_key, load, _ANALYSIS_TTL)
 
 
 def _metrics(rows: list[tuple[datetime, float]]) -> dict:
@@ -183,35 +183,18 @@ def _mfapi_metrics(scheme_key: str) -> dict:
         return {}
 
 
-def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]:
+def _history_for_rows(rows: list[dict], category: str, limit: int | None = None) -> list[dict]:
     if not rows:
         return []
-
-    # Screen the complete live universe first, then spend historical requests
-    # only on the shortlist so the analysis stays fast.
-    candidates = list(rows)
-    if category in {"stocks", "bonds", "commodities", "currency", "fno"}:
-        candidates.sort(key=lambda x: x.get("volume") or x.get("oi") or 0, reverse=True)
-    candidates = candidates[:limit]
+    candidates = list(rows[:limit] if limit is not None else rows)
 
     def work(row):
         item = dict(row)
         key = row.get("instrument_key") or row.get("symbol")
         if not key:
             return item
-        try:
-            metrics = _metrics(_series(key))
-            if metrics.get("available"):
-                item.update(metrics)
-                item["history_source"] = "Upstox historical candles"
-                return item
-        except Exception:
-            pass
 
         if category == "mutual-funds":
-            # Upstox provides the full MF scheme master and latest NAV. For
-            # historical returns, use already-cached AMFI metrics first; only
-            # then fall back to MFAPI for a scheme we can resolve.
             try:
                 from database import mutual_fund_metrics
                 target_name = str(row.get("name", "")).strip().lower()
@@ -228,8 +211,8 @@ def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]
                         "return_1y": cached.get("return_1y"),
                         "return_3y": cached.get("return_3y"),
                         "return_5y": cached.get("return_5y"),
+                        "history_source": cached.get("source") or "AMFI history",
                     })
-                    item["history_source"] = cached.get("source") or "AMFI cached history"
                     return item
             except Exception:
                 pass
@@ -237,17 +220,25 @@ def _history_for_rows(rows: list[dict], category: str, limit: int) -> list[dict]
             if fallback:
                 item.update(fallback)
                 item["history_source"] = "MFAPI fallback"
+            return item
+
+        try:
+            metrics = _metrics(_series(key, unit="months"))
+            if metrics.get("available"):
+                item.update(metrics)
+                item["history_source"] = "Upstox historical candles"
+        except Exception:
+            pass
         return item
 
     out = []
-    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+    with ThreadPoolExecutor(max_workers=min(20, len(candidates))) as pool:
         futures = [pool.submit(work, row) for row in candidates]
         for future in as_completed(futures):
             try:
                 out.append(future.result())
             except Exception:
                 pass
-
     return out
 
 
@@ -277,6 +268,9 @@ def _category_metrics(rows: list[dict], default_vol: float) -> dict:
     result = {
         "available": bool(valid),
         "sample_size": len(valid),
+        "tracked_count": len(rows),
+        "history_count": len(valid),
+        "history_coverage": round((len(valid) / len(rows)) * 100, 1) if rows else 0.0,
         "return_1y": None,
         "return_3y": None,
         "return_5y": None,
