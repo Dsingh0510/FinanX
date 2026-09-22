@@ -813,9 +813,6 @@ def market_now():
         if item:
             add(label,_instrument_key(item),"commodity",unit)
 
-     # Upstox provides a dedicated GLOBAL_INDICATOR for USD INR.
-     # Use it as the homepage benchmark so the value does not depend on an
-     # expiring currency-futures contract.
     # Upstox provides a dedicated GLOBAL_INDICATOR for USD INR.
     # Use it as the homepage benchmark so the value does not depend on an
     # expiring currency-futures contract.
