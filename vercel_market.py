@@ -364,33 +364,195 @@ def _public_category_rows(symbols: list[tuple[str,str]]) -> list[dict]:
     return out
 
 
-def category_market_analysis() -> dict:
-    now=_now()
-    stocks=_stock_history_rows()
-    commodity_symbols=[("Gold","GC=F"),("Silver","SI=F"),("Crude Oil","CL=F"),("Copper","HG=F"),("Natural Gas","NG=F"),("Zinc","ZNC=F"),("Aluminium","ALI=F")]
-    currency_symbols=[("USD/INR","USDINR=X"),("EUR/INR","EURINR=X"),("GBP/INR","GBPINR=X"),("JPY/INR","JPYINR=X"),("AUD/INR","AUDINR=X"),("CNY/INR","CNYINR=X")]
-    commodities=_public_category_rows(commodity_symbols)
-    currencies=_public_category_rows(currency_symbols)
+def _tracked_public_rows(category: str) -> list[dict]:
+    """Return exactly the entities configured in FinanX tracking for Market Performance."""
+    try:
+        from market_universe import history_universe, TRACKING_LIMITS, compare_mutual_funds
+        hu = history_universe()
+        if category == "mutual-funds":
+            rows = compare_mutual_funds(TRACKING_LIMITS["mutual-funds"])
+        else:
+            rows = list(hu.get(category) or [])
+            rows = rows[:TRACKING_LIMITS.get(category, len(rows))]
+        return rows
+    except Exception:
+        return []
 
-    funds_raw=[x for x in mutual_fund_metrics() if not str(x.get("source","")).startswith("Bond proxy")]
-    funds=[{"name":x.get("scheme_name"),"symbol":x.get("scheme_code"),"return_1y":x.get("return_1y"),"return_3y":x.get("return_3y"),"return_5y":x.get("return_5y"),"latest_nav":x.get("latest_nav"),"available":True} for x in funds_raw[:30] if any(x.get(k) is not None for k in ("return_1y","return_3y","return_5y"))]
-    bond_funds=[x for x in mutual_fund_metrics() if str(x.get("source","")).startswith("Bond proxy")]
-    bonds=[{"name":x.get("scheme_name"),"symbol":x.get("scheme_code"),"return_1y":x.get("return_1y"),"return_3y":x.get("return_3y"),"return_5y":x.get("return_5y"),"available":True} for x in bond_funds if any(x.get(k) is not None for k in ("return_1y","return_3y","return_5y"))][:3]
 
-    fd_rates=[6.25,6.25,6.40,6.25,6.40,6.25,6.25,6.25,6.25,6.25]
-    fd_rows=[{"name":f"Official FD rate {i+1}","symbol":f"FD-{i+1}","return_1y":r,"return_3y":r,"return_5y":r,"available":True,"rate":r} for i,r in enumerate(fd_rates,1)]
+def _public_symbol_for_tracked(category: str, row: dict) -> str | None:
+    text = " ".join(
+        str(row.get(k, "")) for k in (
+            "name", "trading_symbol", "symbol", "underlying_symbol",
+            "underlying", "short_name"
+        )
+    ).upper()
+    sym = str(row.get("trading_symbol") or row.get("symbol") or "").strip().upper()
 
-    result={
-        "stocks":{"status":"public-history","source":"Public market history","metrics":_average_metric_rows(stocks),"analyzed_options":stocks,"updated_at":now},
-        "mutual-funds":{"status":"daily-nav","source":"AMFI/MFAPI cached NAV history","metrics":_average_metric_rows(funds),"analyzed_options":funds,"updated_at":now},
-        "bonds":{"status":"bond-fund-history" if bonds else "history-unavailable","source":"AMFI bond-fund proxy NAV history","metrics":_average_metric_rows(bonds),"analyzed_options":bonds,"updated_at":now},
-        "gold":{"status":"public-history","source":"Public gold futures history","metrics":_average_metric_rows([x for x in commodities if x["name"]=="Gold"]),"analyzed_options":[x for x in commodities if x["name"]=="Gold"],"updated_at":now},
-        "commodities":{"status":"public-history","source":"Public commodity history","metrics":_average_metric_rows(commodities),"analyzed_options":commodities,"updated_at":now},
-        "currency":{"status":"public-history","source":"Public currency history","metrics":_average_metric_rows(currencies),"analyzed_options":currencies,"updated_at":now},
-        "fno":{"status":"underlying-reference","source":"NIFTY 50 underlying history reference","metrics":_average_metric_rows([stocks[0]] if stocks else []),"analyzed_options":[{"name":"NIFTY derivatives underlying reference","symbol":"^NSEI","return_1y":stocks[0].get("return_1y") if stocks else None,"return_3y":stocks[0].get("return_3y") if stocks else None,"return_5y":stocks[0].get("return_5y") if stocks else None}],"updated_at":now},
-        "fd":{"status":"rate-reference","source":"Official 1-year FD rate entries","metrics":_average_metric_rows(fd_rows),"analyzed_options":fd_rows,"updated_at":now},
+    if category in {"stocks", "bonds"}:
+        return f"{sym}.NS" if sym else None
+
+    if category == "fno":
+        underlying = str(row.get("underlying") or row.get("underlying_symbol") or "").upper()
+        if "NIFTY BANK" in underlying or "BANKNIFTY" in underlying:
+            return "^NSEBANK"
+        if "NIFTY IT" in underlying:
+            return "^CNXIT"
+        if "NIFTY" in underlying:
+            return "^NSEI"
+        return f"{sym}.NS" if sym else None
+
+    if category == "gold":
+        return "GC=F" if "GOLD" in text else None
+
+    if category == "commodities":
+        for needle, symbol in (
+            ("SILVER", "SI=F"), ("CRUDE", "CL=F"), ("COPPER", "HG=F"),
+            ("NATURALGAS", "NG=F"), ("NATURAL GAS", "NG=F"),
+            ("NATGAS", "NG=F"), ("ZINC", "ZNC=F"),
+            ("ALUMIN", "ALI=F"), ("ALUMINI", "ALI=F"), ("GOLD", "GC=F"),
+        ):
+            if needle in text:
+                return symbol
+        return None
+
+    if category == "currency":
+        for needle, symbol in (
+            ("USDINR", "USDINR=X"), ("USD/INR", "USDINR=X"),
+            ("EURINR", "EURINR=X"), ("EUR/INR", "EURINR=X"),
+            ("GBPINR", "GBPINR=X"), ("GBP/INR", "GBPINR=X"),
+            ("JPYINR", "JPYINR=X"), ("JPY/INR", "JPYINR=X"),
+            ("AUDINR", "AUDINR=X"), ("AUD/INR", "AUDINR=X"),
+            ("CNYINR", "CNYINR=X"), ("CNY/INR", "CNYINR=X"),
+        ):
+            if needle in text:
+                return symbol
+        return None
+
+    return None
+
+
+def _tracked_history_rows(category: str) -> list[dict]:
+    rows = _tracked_public_rows(category)
+    if not rows:
+        return []
+
+    if category == "mutual-funds":
+        def mf_work(row):
+            code = str(row.get("scheme_code") or row.get("schemeCode") or row.get("symbol") or "").split("|")[-1].strip()
+            if not code:
+                return {"name": row.get("name"), "available": False}
+            hist = _mf_history(code)
+            return {
+                "name": row.get("name") or (hist or {}).get("scheme_name") or code,
+                "symbol": code,
+                "return_1y": (hist or {}).get("return_1y"),
+                "return_3y": (hist or {}).get("return_3y"),
+                "return_5y": (hist or {}).get("return_5y"),
+                "volatility_annualized": (hist or {}).get("volatility_annualized"),
+                "available": bool(hist and hist.get("available")),
+            }
+    else:
+        def mf_work(row):
+            symbol = _public_symbol_for_tracked(category, row)
+            if not symbol:
+                return {"name": row.get("name") or row.get("trading_symbol"), "available": False}
+            series = _series(symbol, period="5y", interval="1mo")
+            metrics = _metrics(series, periods_per_year=12)
+            return {
+                "name": row.get("name") or row.get("trading_symbol") or symbol,
+                "symbol": row.get("trading_symbol") or row.get("symbol") or symbol,
+                **metrics,
+            }
+
+    worker_count = min(12, len(rows))
+    with ThreadPoolExecutor(max_workers=worker_count) as ex:
+        futures = [ex.submit(mf_work, row) for row in rows]
+        out = []
+        for fut in as_completed(futures):
+            try:
+                out.append(fut.result())
+            except Exception:
+                pass
+    return out
+
+
+def _tracked_average(rows: list[dict]) -> dict:
+    tracked = len(rows)
+    valid = [
+        row for row in rows
+        if any(row.get(key) is not None for key in ("return_1y", "return_3y", "return_5y"))
+    ]
+    result = {
+        "available": bool(valid),
+        "sample_size": len(valid),
+        "tracked_count": tracked,
+        "history_count": len(valid),
+        "history_coverage": round((len(valid) / tracked) * 100, 1) if tracked else 0.0,
+        "return_1y": None,
+        "return_3y": None,
+        "return_5y": None,
+        "volatility_annualized": None,
     }
+    for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized"):
+        values = [float(row[key]) for row in valid if row.get(key) is not None]
+        if values:
+            result[key] = round(sum(values) / len(values), 2)
+    result["average_basis"] = (
+        f"Average of {len(valid)}/{tracked} tracked entities"
+        if tracked else "No tracked entities"
+    )
     return result
+
+
+def category_market_analysis() -> dict:
+    now = _now()
+
+    tracked = {
+        "stocks": _tracked_history_rows("stocks"),
+        "mutual-funds": _tracked_history_rows("mutual-funds"),
+        "bonds": _tracked_history_rows("bonds"),
+        "gold": _tracked_history_rows("gold"),
+        "commodities": _tracked_history_rows("commodities"),
+        "currency": _tracked_history_rows("currency"),
+        "fno": _tracked_history_rows("fno"),
+    }
+
+    fd_rates = [6.25, 6.25, 6.40, 6.25, 6.40, 6.25, 6.25, 6.25, 6.25, 6.25]
+    fd_rows = [
+        {"name": f"Official FD rate {i+1}", "rate": rate, "return_1y": rate,
+         "return_3y": rate, "return_5y": rate, "available": True}
+        for i, rate in enumerate(fd_rates, 1)
+    ]
+
+    def segment(slug, source):
+        rows = tracked.get(slug, [])
+        return {
+            "status": "tracked-average",
+            "source": source,
+            "metrics": _tracked_average(rows),
+            "analyzed_options": rows,
+            "updated_at": now,
+        }
+
+    return {
+        "stocks": segment("stocks", "Tracked stock universe • public market history"),
+        "mutual-funds": segment("mutual-funds", "Tracked mutual-fund universe • AMFI/MFAPI NAV history"),
+        "bonds": segment("bonds", "Tracked bond universe • public listed-security history where available"),
+        "gold": segment("gold", "Tracked gold contracts • public gold futures history"),
+        "commodities": segment("commodities", "Tracked commodity universe • public commodity history"),
+        "currency": segment("currency", "Tracked currency universe • public currency history"),
+        "fno": segment("fno", "Tracked F&O universe • underlying market history"),
+        "fd": {
+            "status": "rate-reference",
+            "source": "Official 1-year FD rate entries",
+            "metrics": {
+                **_tracked_average(fd_rows),
+                "rate_average": round(sum(x["rate"] for x in fd_rows) / len(fd_rows), 2),
+            },
+            "analyzed_options": fd_rows,
+            "updated_at": now,
+        },
+    }
 
 
 def market_highlights() -> list[dict]:
