@@ -343,7 +343,11 @@ function renderHeroMarket(items){
    const prefix='';
    const unit=t.unit||'';
   const valueTxt=t.value==null?'—':`${prefix}${Number(t.value).toLocaleString('en-IN',{minimumFractionDigits:isMf?4:2,maximumFractionDigits:isMf?4:2})}${unit?` ${escapeHtml(unit)}`:''}`;
-   const dTxt=t.freshness==='live'?(d==null?'LIVE':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`):(d==null?'Latest available':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`);
+   const dTxt=t.freshness==='live'
+     ? (d==null?'LIVE':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`)
+     : t.freshness==='public_intraday'
+       ? (d==null?'Public intraday':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`)
+       : (d==null?'Latest available':`${d>=0?'+':''}${Number(d).toFixed(2)}% today`);
    const rTxt=r==null?'':` • ${r>=0?'+':''}${Number(r).toFixed(1)}% YoY`;
    const cls=d!=null&&d<0?'down':'';
    return `<div class="hero-market-row"><span>${escapeHtml(label)}<small>${valueTxt}${rTxt}</small></span><b class="${cls}">${dTxt}</b></div>`;
