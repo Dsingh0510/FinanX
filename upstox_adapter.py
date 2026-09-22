@@ -684,29 +684,33 @@ def _fallback_market_cards(missing_labels):
     return out
 
 
+def _fallback_market_cards(missing_labels):
+    out = {}
+    try:
+        import vercel_market
+        for row in vercel_market.market_highlights():
+            if row.get("label") in missing_labels:
+                item = dict(row)
+                item["freshness"] = "fallback"
+                out[item["label"]] = item
+    except Exception:
+        pass
+    return out
+
+
 def market_highlights() -> list[dict]:
     wanted = [
-        "NIFTY 50",
-        "Gold",
-        "USD/INR",
-        "NIFTY Bank",
-        "NIFTY IT",
-        "Reliance Industries",
-        "HDFC Bank",
-        "TCS",
-        "India VIX",
+        "NIFTY 50", "Gold", "USD/INR",
+        "NIFTY Bank", "NIFTY IT",
+        "Reliance Industries", "HDFC Bank", "TCS", "Infosys",
     ]
-
-    out = []
     try:
         live = {x.get("label"): x for x in market_now() if x.get("label")}
-        missing = [label for label in wanted if label not in live]
-        live.update(_fallback_market_cards(missing))
-        out = [live[label] for label in wanted if label in live]
     except Exception:
-        out = []
-
-    return out[:9]
+        live = {}
+    missing = [x for x in wanted if x not in live]
+    live.update(_fallback_market_cards(missing))
+    return [live[x] for x in wanted if x in live][:9]
 
 def market_snapshot() -> dict:
     analysis = category_market_analysis()
