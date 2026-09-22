@@ -404,6 +404,7 @@ def category_market_analysis() -> dict:
         "stocks": (hu.get("stocks", [])[:100], "stocks", None),
         "bonds": (hu.get("bonds", [])[:50], "bonds", None),
         "mutual-funds": (hu.get("mutual-funds", [])[:100], "mutual-funds", None),
+        "gold": (hu.get("gold", [])[:5], "gold", None),
         "commodities": (hu.get("commodities", [])[:50], "commodities", None),
         "currency": (hu.get("currency", [])[:50], "currency", None),
     }
@@ -518,7 +519,7 @@ def category_market_analysis() -> dict:
                 bond_data_status = "fallback"
         except Exception:
             pass
-    gold_metrics = _category_metrics(gold, 16.0)
+    gold_metrics = _category_metrics(history_results.get("gold", []), 16.0)
 
     # If Upstox historical candles are unavailable for a segment, use a
     # targeted public-data fallback for that segment only. This keeps Upstox
