@@ -336,8 +336,8 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
                 'annual_return_estimate': round(rate, 2),
                 'volatility_estimate': round(vol, 2),
                 'yoy_return': entity.get('yoy_return'),
-                'three_year_return': v3_rate,
-                'five_year_return': v5_rate,
+                'three_year_return': entity.get('three_year_return'),
+                'five_year_return': entity.get('five_year_return'),
                 'projected_value': round(projected, 2),
                 'projected_gain': round(gain, 2),
                 'projected_3y_value': round(projected_3, 2),
@@ -371,7 +371,10 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
             'projected_5y_value': round(cat_projected_5, 2),
             'projected_value': round(cat_projected, 2),
             'projected_gain': round(cat_projected - category_invested, 2),
-            'basis': f"Entity-level screened across {len(_rank_entity_options(slug, market_segments.get(slug, {}), risk, horizon, goal))} tracked options",
+            'basis': (
+                f"Screened across {len(_rank_entity_options(slug, market_segments.get(slug, {}), risk, horizon, goal))} tracked options"
+                + (f" • {len(selected_names)} selected" if selected_names else "")
+            ),
             'selected_options': selected_names,
         })
 
@@ -535,8 +538,8 @@ def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency
             'annual_return_estimate': p['annual_return_estimate'],
             'basis': basis,
             'yoy_return': p['yoy_return'],
-            'three_year_return': p['three_year_return'] if p['three_year_return'] is not None else p['annual_return_estimate'],
-            'five_year_return': p['five_year_return'] if p['five_year_return'] is not None else p['annual_return_estimate'],
+            'three_year_return': p['three_year_return'],
+            'five_year_return': p['five_year_return'],
             'tracked_options': market_analysis.get(row['category'], {}).get('analyzed_options', []),
             'selected_options': [x['name'] for x in ranked_options[:ENTITY_DISPLAY_LIMIT.get(row['category'], 3)]],
         })
