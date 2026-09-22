@@ -494,41 +494,66 @@ def _find_index_key(*names):
     return None
 
 
+def _find_nearest_future(rows, matcher):
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    candidates = []
+    for row in rows:
+        if row.get("instrument_type") != "FUT" or not matcher(row):
+            continue
+        expiry_ms = _parse_expiry(row.get("expiry"))
+        if expiry_ms is None or expiry_ms < now_ms:
+            continue
+        item = dict(row)
+        item["_expiry_ms"] = expiry_ms
+        candidates.append(item)
+    return min(candidates, key=lambda x: x["_expiry_ms"]) if candidates else None
+
+
 def market_now():
+    """Build exactly nine market cards from Upstox first."""
     targets = [
         ("NIFTY 50", "NSE_INDEX|Nifty 50", "index"),
-        ("Gold", None, "commodity"),
-        ("USD/INR", None, "currency"),
         ("NIFTY Bank", "NSE_INDEX|Nifty Bank", "index"),
         ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
-        ("Reliance Industries", "NSE_EQ|INE002A01018", "equity"),
-        ("HDFC Bank", "NSE_EQ|INE040A01034", "equity"),
-        ("TCS", "NSE_EQ|INE467B01029", "equity"),
-        ("India VIX", "NSE_INDEX|India VIX", "index"),
     ]
 
-    gold = compare_gold()
+    # Use the Upstox equity universe for the five stock cards.
+    stock_rows = compare_stocks()
+    stock_by = {str(x.get("symbol", "")).upper(): x for x in stock_rows}
+    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"):
+        row = stock_by.get(symbol)
+        if row and row.get("instrument_key"):
+            targets.append((row.get("name") or symbol, row["instrument_key"], "equity"))
+
+    # Gold: nearest active MCX GOLD future.
+    gold_rows = [
+        x for x in _active_rows({"MCX_FO"}, {"FUT"})
+        if "GOLD" in (
+            str(x.get("underlying_symbol", "")).upper()
+            + " "
+            + str(x.get("name", "")).upper()
+            + " "
+            + str(x.get("trading_symbol", "")).upper()
+        )
+    ]
+    gold = _find_nearest_future(gold_rows, lambda x: True)
     if gold:
-        targets[1] = ("Gold", gold[0]["instrument_key"], "commodity")
+        targets.append(("Gold", _instrument_key(gold), "commodity"))
 
-    usd = [
-        x for x in compare_currency()
-        if "USDINR" in str(x.get("symbol", "")).upper()
-        or "USDINR" in str(x.get("underlying", "")).upper()
+    # USD/INR: nearest active USDINR currency future.
+    currency_rows = [
+        x for x in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+        if "USDINR" in (
+            str(x.get("underlying_symbol", "")).upper()
+            + " "
+            + str(x.get("name", "")).upper()
+            + " "
+            + str(x.get("trading_symbol", "")).upper()
+        )
     ]
+    usd = _find_nearest_future(currency_rows, lambda x: True)
     if usd:
-        targets[2] = ("USD/INR", usd[0]["instrument_key"], "currency")
-
-    index_fallbacks = {
-        "NIFTY 50": ("NSE_INDEX|Nifty 50",),
-        "NIFTY Bank": ("NSE_INDEX|Nifty Bank",),
-        "NIFTY IT": ("NSE_INDEX|Nifty IT",),
-        "India VIX": ("NSE_INDEX|India VIX",),
-    }
-    for i, (label, key, kind) in enumerate(targets):
-        if not key and label in index_fallbacks:
-            key = _find_index_key(label, *index_fallbacks[label])
-            targets[i] = (label, key, kind)
+        targets.append(("USD/INR", _instrument_key(usd), "currency"))
 
     quotes = _quotes([key for _, key, _ in targets if key])
     output = []
@@ -548,4 +573,5 @@ def market_now():
             "freshness": "live",
             "instrument_key": key,
         })
-    return output
+
+    return output[:9]
