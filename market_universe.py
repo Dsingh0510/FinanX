@@ -361,50 +361,77 @@ def compare_currency():
 
 
 def compare_mutual_funds(limit=100):
-    rows = []
-    for row in mutual_fund_instruments():
-        if not row.get("purchase_allowed", True):
-            continue
-        name = str(row.get("name", ""))
-        plan = str(row.get("plan", "")).upper()
-        dividend_type = str(row.get("dividend_type", "")).lower()
-        if plan and plan != "DIRECT":
-            continue
-        if dividend_type and "growth" not in dividend_type and "growth" not in name.lower():
-            continue
-        rows.append(row)
+    """Return a broad Upstox MF universe using the official MF instrument master."""
+    raw = mutual_fund_instruments()
+    if isinstance(raw, dict):
+        rows = raw.get("data") or raw.get("instruments") or []
+    else:
+        rows = raw or []
 
-    def quality(row):
-        scheme_type = str(row.get("scheme_type", "")).upper()
-        score = 0
-        for term in ("EQUITY", "HYBRID", "DEBT", "ELSS", "INDEX"):
-            if term in scheme_type:
-                score += 1
-        return score
-
-    rows.sort(key=lambda x: (quality(x), float(x.get("last_price") or 0)), reverse=True)
-    output = []
-    seen = set()
+    # Do not require purchase_allowed/plan/dividend fields: the Upstox MF
+    # instrument master can omit those fields for some valid schemes.
+    candidates = []
     for row in rows:
-        key = row.get("instrument_key")
-        if not key or key in seen:
+        key = _instrument_key(row)
+        name = str(row.get("name") or row.get("scheme_name") or "").strip()
+        nav = row.get("last_price")
+        if not key or not name:
             continue
-        seen.add(key)
-        output.append({
-            "name": row.get("name"),
-            "scheme_code": key,
-            "symbol": key,
+        try:
+            nav_value = float(nav) if nav is not None else None
+        except (TypeError, ValueError):
+            nav_value = None
+        candidates.append({
+            "_row": row,
             "instrument_key": key,
-            "latest_nav": row.get("last_price"),
+            "name": name,
+            "latest_nav": nav_value,
             "latest_date": row.get("last_price_date"),
             "scheme_type": row.get("scheme_type"),
             "plan": row.get("plan"),
             "dividend_type": row.get("dividend_type"),
+        })
+
+    def rank(item):
+        row = item["_row"]
+        text = " ".join(str(row.get(k, "")) for k in ("scheme_type", "name", "short_name")).upper()
+        score = 0
+        for term in ("EQUITY", "HYBRID", "DEBT", "ELSS", "INDEX"):
+            if term in text:
+                score += 3
+        if "DIRECT" in text:
+            score += 2
+        if "GROWTH" in text:
+            score += 2
+        if item["latest_nav"] is not None:
+            score += 1
+        return score
+
+    candidates.sort(key=lambda x: (rank(x), x["latest_nav"] is not None), reverse=True)
+
+    output = []
+    seen = set()
+    for item in candidates:
+        key = item["instrument_key"]
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append({
+            "name": item["name"],
+            "scheme_code": item["_row"].get("scheme_code") or item["_row"].get("schemeCode") or key,
+            "symbol": key,
+            "instrument_key": key,
+            "latest_nav": item["latest_nav"],
+            "latest_date": item["latest_date"],
+            "scheme_type": item["scheme_type"],
+            "plan": item["plan"],
+            "dividend_type": item["dividend_type"],
             "source": "Upstox mutual-fund instrument master",
         })
         if len(output) >= limit:
             break
     return output
+
 
 
 def compare_fds():
@@ -443,10 +470,13 @@ def tracking_universe():
         ) for word in ("BOND", "GILT", "SDL", "GSEC", "BHARAT"))
     ][:50]
 
+    fund_rows = compare_mutual_funds(100)
+
     return {
         "stocks": [x.get("trading_symbol") or x.get("short_name") or x.get("name") for x in stock_rows[:100]],
         "fno": [x.get("trading_symbol") or x.get("name") for x in fno_rows],
         "bonds": [x.get("trading_symbol") or x.get("short_name") or x.get("name") for x in bond_rows],
+        "mutual-funds": [x.get("name") for x in fund_rows],
     }
 
 
