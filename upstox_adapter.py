@@ -685,7 +685,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         "updated_at": now,
     }
     result["_tracking"]["ready"] = (
-        result["_tracking"]["configured_stocks"] >= 80
+        result["_tracking"]["configured_stocks"] >= 20
         and result["_tracking"]["configured_fno"] >= 10
         and result["_tracking"]["configured_funds"] >= 20
         and result["_tracking"]["configured_bonds"] >= 5
