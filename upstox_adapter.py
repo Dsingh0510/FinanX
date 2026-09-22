@@ -276,6 +276,10 @@ def _category_metrics(rows: list[dict], default_vol: float) -> dict:
             result[key] = round(sum(values) / len(values), 2)
     if result["volatility_annualized"] is None:
         result["volatility_annualized"] = default_vol
+    result["average_basis"] = (
+        f"Average of {len(valid)}/{len(rows)} tracked entities" if rows
+        else "No tracked history available"
+    )
     return result
 
 
@@ -482,24 +486,6 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
 
     fund_metrics = _category_metrics(history_results.get("mutual-funds", []), 14.0)
     fund_data_status = "upstox"
-    if not fund_metrics.get("available"):
-        try:
-            from amfi_data import category_metrics, update_amfi_metrics_fast
-            amfi_metrics = category_metrics()
-            if not amfi_metrics.get("available"):
-                update_amfi_metrics_fast()
-                amfi_metrics = category_metrics()
-            if amfi_metrics.get("available"):
-                fund_metrics.update({
-                    "available": True,
-                    "sample_size": amfi_metrics.get("sample_size", 0),
-                    "return_1y": amfi_metrics.get("return_1y"),
-                    "return_3y": amfi_metrics.get("return_3y"),
-                    "return_5y": amfi_metrics.get("return_5y"),
-                })
-                fund_data_status = "upstox+amfi-history"
-        except Exception:
-            pass
 
     bond_metrics = _category_metrics(history_results.get("bonds", []), 7.0)
     commodity_metrics = _category_metrics(history_results.get("commodities", []), 25.0)
@@ -510,54 +496,15 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     else:
         fno_data_status = "upstox"
     bond_data_status = "upstox"
-    if not bond_metrics.get("available"):
-        try:
-            from amfi_data import bond_proxy_metrics, update_bond_proxy_metrics_fast
-            proxy = bond_proxy_metrics()
-            if not proxy.get("available"):
-                update_bond_proxy_metrics_fast()
-                proxy = bond_proxy_metrics()
-            if proxy.get("available"):
-                for key in ("return_1y", "return_3y", "return_5y"):
-                    if proxy.get(key) is not None:
-                        bond_metrics[key] = proxy.get(key)
-                bond_metrics["available"] = True
-                bond_metrics["sample_size"] = proxy.get("sample_size") or bond_metrics.get("sample_size", 0)
-                bond_metrics["volatility_annualized"] = bond_metrics.get("volatility_annualized") or 7.0
-                bond_data_status = "fallback"
-        except Exception:
-            pass
     gold_metrics = _category_metrics(history_results.get("gold", []), 16.0)
 
-    # If Upstox historical candles are unavailable for a segment, use a
-    # targeted public-data fallback for that segment only. This keeps Upstox
-    # primary while avoiding fake baseline return numbers in the UI.
-    fallback_analysis = {}
-    try:
-        import vercel_market
-        fallback_analysis = vercel_market.category_market_analysis()
-    except Exception:
-        fallback_analysis = {}
-
-    def enrich_with_fallback(category, metrics):
-        if metrics.get("available"):
-            return metrics, "upstox"
-        fb = fallback_analysis.get(category) or {}
-        fbm = fb.get("metrics") or {}
-        if fbm.get("available") and any(fbm.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
-            merged = dict(metrics)
-            for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized"):
-                if fbm.get(key) is not None:
-                    merged[key] = fbm.get(key)
-            merged["available"] = True
-            merged["sample_size"] = fbm.get("sample_size") or metrics.get("sample_size", 0)
-            return merged, "fallback"
-        return metrics, "upstox"
-
-    stock_metrics, stock_data_status = enrich_with_fallback("stocks", stock_metrics)
-    gold_metrics, gold_data_status = enrich_with_fallback("gold", gold_metrics)
-    commodity_metrics, commodity_data_status = enrich_with_fallback("commodities", commodity_metrics)
-    currency_metrics, currency_data_status = enrich_with_fallback("currency", currency_metrics)
+    # Market-analysis return values are never substituted with a
+    # representative symbol or model proxy. They remain the exact averages
+    # calculated from the tracked entities above.
+    stock_data_status = "upstox"
+    gold_data_status = "upstox"
+    commodity_data_status = "upstox"
+    currency_data_status = "upstox"
 
     fd_values = [float(x["rate"]) for x in fds if x.get("rate") is not None]
     fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
@@ -581,7 +528,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         },
         "bonds": {
             "status": "fallback" if "bonds" in snapshot.get("_fallback", {}) else bond_data_status,
-            "source": snapshot.get("_fallback", {}).get("bonds") or ("AMFI corporate-bond proxy history + Upstox listed bond/debt quotes" if bond_data_status == "fallback" else "Upstox listed bond/debt quotes"),
+            "source": snapshot.get("_fallback", {}).get("bonds") or "Upstox listed bond/debt quotes",
             "metrics": bond_metrics,
             "analyzed_options": bonds,
             "updated_at": now,
