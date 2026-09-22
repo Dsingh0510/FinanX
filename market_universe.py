@@ -572,97 +572,107 @@ def _nearest_future_by_terms(rows, terms):
 
 
 def market_now():
-    """Build a broad live Market Now board using one batched Upstox quote call."""
+    """Build a broad live Market Now board from one batched Upstox quote request."""
+    # Fixed, high-value indices first.
     targets = []
+    seen_keys = set()
 
-    # Indices resolved from the instrument master.
+    def add_target(label, key, kind, unit=None):
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        targets.append((label, key, kind, unit))
+
     index_specs = [
         ("NIFTY 50", ("NIFTY 50",)),
         ("NIFTY Bank", ("NIFTY BANK", "BANK NIFTY")),
         ("NIFTY IT", ("NIFTY IT",)),
         ("India VIX", ("INDIA VIX",)),
-        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100",)),
-        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100",)),
+        ("NIFTY Midcap 100", ("NIFTY MIDCAP 100", "NIFTY MIDCAP")),
+        ("NIFTY Smallcap 100", ("NIFTY SMALLCAP 100", "NIFTY SMALLCAP")),
     ]
     for label, terms in index_specs:
-        key = _index_key_from_terms(*terms)
-        if key:
-            targets.append((label, key, "index"))
+        add_target(label, _index_key_from_terms(*terms), "index")
 
+    # Selected liquid equities.
     eq_rows = [
         x for x in instruments()
         if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
     ]
     by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq_rows}
-    for symbol in ("RELIANCE", "HDFCBANK", "TCS"):
+    for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"):
         row = by_symbol.get(symbol)
-        if row and _instrument_key(row):
-            targets.append((row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity"))
+        if row:
+            add_target(
+                row.get("short_name") or row.get("name") or symbol,
+                _instrument_key(row),
+                "equity",
+            )
 
+    # Commodities: take the nearest contract for each distinct liquid underlying.
     active_mcx = _active_rows({"MCX_FO"}, {"FUT"})
-    for label, terms in (
+    commodity_terms = [
         ("Gold", ("GOLD",)),
         ("Silver", ("SILVER",)),
         ("Crude Oil", ("CRUDE", "CRUDEOIL")),
         ("Copper", ("COPPER",)),
-    ):
+        ("Natural Gas", ("NATURAL GAS", "NATGAS")),
+        ("Zinc", ("ZINC",)),
+        ("Aluminium", ("ALUMINIUM", "ALUMINI")),
+    ]
+    for label, terms in commodity_terms:
         item = _nearest_future_by_terms(active_mcx, terms)
         if item:
-            targets.append((label, _instrument_key(item), "commodity"))
+            add_target(label, _instrument_key(item), "commodity", "/10g" if label == "Gold" else None)
 
+    # Currencies: select several actively traded INR pairs.
     active_fx = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
-    for label, terms in (
+    currency_specs = [
         ("USD/INR", ("USDINR",)),
         ("EUR/INR", ("EURINR",)),
         ("GBP/INR", ("GBPINR",)),
         ("JPY/INR", ("JPYINR",)),
-    ):
+        ("AUD/INR", ("AUDINR",)),
+        ("CNY/INR", ("CNYINR",)),
+    ]
+    for label, terms in currency_specs:
         item = _nearest_future_by_terms(active_fx, terms)
         if item:
-            targets.append((label, _instrument_key(item), "currency"))
+            add_target(label, _instrument_key(item), "currency", None)
 
-    # Select up to four liquid listed bond/debt instruments without pulling the
-    # entire bond comparison universe.
+    # Bonds: resolve up to five currently quoted listed bond/debt instruments,
+    # but use the same single quote request as all other cards.
     try:
-        bond_rows = _bond_instruments(12)
-        bond_quotes = _quotes([_instrument_key(x) for x in bond_rows])
-        bond_items = []
+        bond_rows = _bond_instruments(30)
         for row in bond_rows:
-            key = _instrument_key(row)
-            q = bond_quotes.get(key.replace("|", ":")) or bond_quotes.get(key) or {}
-            ltp, change = _quote_value(q)
-            if ltp is not None:
-                bond_items.append({
-                    "label": row.get("short_name") or row.get("name") or row.get("trading_symbol") or "Listed Bond",
-                    "value": round(ltp, 4),
-                    "today_change": round(change, 2) if change is not None else None,
-                    "kind": "bond",
-                    "unit": None,
-                    "freshness": "live",
-                    "instrument_key": key,
-                })
-        bond_items.sort(key=lambda x: abs(x.get("today_change") or 0), reverse=True)
+            add_target(
+                row.get("short_name") or row.get("name") or row.get("trading_symbol") or "Listed Bond",
+                _instrument_key(row),
+                "bond",
+            )
+            if sum(1 for x in targets if x[2] == "bond") >= 5:
+                break
     except Exception:
-        bond_items = []
+        pass
 
-    quote_keys = [key for _, key, _ in targets if key]
-    quotes = _quotes(quote_keys)
+    # One batched Upstox quote call for everything on the board.
+    quotes = _quotes([key for _, key, _, _ in targets])
+
     output = []
-    for label, key, kind in targets:
+    for label, key, kind, unit in targets:
         q = quotes.get(key.replace("|", ":")) or quotes.get(key) or {}
         ltp, change = _quote_value(q)
         if ltp is None:
             continue
         output.append({
             "label": label,
-            "value": round(ltp, 4 if kind == "commodity" else 2),
+            "value": round(ltp, 4 if kind in ("currency", "commodity") else 2),
             "today_change": round(change, 2) if change is not None else None,
             "kind": kind,
-            "unit": "/10g" if label == "Gold" else None,
+            "unit": unit,
             "freshness": "live",
             "instrument_key": key,
         })
 
-    output.extend(bond_items[:4])
     return output
 
