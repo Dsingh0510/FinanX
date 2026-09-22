@@ -517,13 +517,18 @@ def market_now():
         ("NIFTY IT", "NSE_INDEX|Nifty IT", "index"),
     ]
 
-    # Use the Upstox equity universe for the five stock cards.
-    stock_rows = compare_stocks()
-    stock_by = {str(x.get("symbol", "")).upper(): x for x in stock_rows}
+    # Resolve only the five equity cards needed for Market Now instead of
+    # requesting the entire stock universe.
+    eq = [
+        x for x in instruments()
+        if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"
+    ]
+    wanted_equities = {"RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"}
+    by_symbol = {str(x.get("trading_symbol", "")).upper(): x for x in eq}
     for symbol in ("RELIANCE", "HDFCBANK", "TCS", "INFY", "SBIN"):
-        row = stock_by.get(symbol)
-        if row and row.get("instrument_key"):
-            targets.append((row.get("name") or symbol, row["instrument_key"], "equity"))
+        row = by_symbol.get(symbol)
+        if row and _instrument_key(row):
+            targets.append((row.get("short_name") or row.get("name") or symbol, _instrument_key(row), "equity"))
 
     # Gold: nearest active MCX GOLD future.
     gold_rows = [
