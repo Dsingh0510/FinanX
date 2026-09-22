@@ -669,30 +669,35 @@ def category_market_analysis() -> dict:
 
 
 def _fallback_market_cards(missing_labels):
-    """Use a public reference source only for labels Upstox could not supply."""
+    """Targeted fallback only for cards that Upstox could not supply."""
     out = {}
     try:
         import vercel_market
-        if any(x in missing_labels for x in ("NIFTY 50", "Gold", "USD/INR")):
+        if any(label in missing_labels for label in ("NIFTY 50", "Gold", "USD/INR")):
             for row in vercel_market.market_highlights():
                 if row.get("label") in missing_labels:
-                    row = dict(row)
-                    row["freshness"] = "fallback"
-                    out[row["label"]] = row
-    except Exception:
-        pass
-    return out
+                    item = dict(row)
+                    item["freshness"] = "fallback"
+                    out[item["label"]] = item
 
-
-def _fallback_market_cards(missing_labels):
-    out = {}
-    try:
-        import vercel_market
-        for row in vercel_market.market_highlights():
-            if row.get("label") in missing_labels:
-                item = dict(row)
-                item["freshness"] = "fallback"
-                out[item["label"]] = item
+        stock_symbols = {
+            "Reliance Industries": "RELIANCE.NS",
+            "HDFC Bank": "HDFCBANK.NS",
+            "TCS": "TCS.NS",
+            "Infosys": "INFY.NS",
+        }
+        for label, symbol in stock_symbols.items():
+            if label not in missing_labels:
+                continue
+            try:
+                row = vercel_market._quote(symbol, label)
+            except Exception:
+                row = None
+            if row:
+                row = dict(row)
+                row["kind"] = "equity"
+                row["freshness"] = "fallback"
+                out[label] = row
     except Exception:
         pass
     return out
