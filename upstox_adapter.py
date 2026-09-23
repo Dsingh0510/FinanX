@@ -359,6 +359,7 @@ def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, fl
         if metrics.get(key) is None:
             metrics[key] = annualized
             methods[key] = "available-history-annualized"
+    metrics["available"] = any(metrics.get(key) is not None for key in ("return_1y", "return_3y", "return_5y"))
     return metrics
 
 
