@@ -94,6 +94,150 @@ def _cached(key: str, factory, ttl: float):
     return value
 
 
+_EXPIRED_HISTORY_TTL = 24 * 60 * 60
+_EXPIRED_DISCOVERY_TTL = 6 * 60 * 60
+_EXPIRED_API_BASE = "https://api.upstox.com/v2"
+
+
+def _expired_get(path: str, *, params: dict | None = None, timeout: int = _HISTORY_TIMEOUT) -> dict:
+    return _get(f"{_EXPIRED_API_BASE}{path}", params=params, timeout=timeout)
+
+
+def _expired_expiries(underlying_key: str) -> list[str]:
+    if not underlying_key:
+        return []
+
+    def load():
+        try:
+            payload = _expired_get(
+                "/expired-instruments/expiries",
+                params={"instrument_key": underlying_key},
+            )
+            values = payload.get("data") or []
+            return sorted({str(value)[:10] for value in values if value})
+        except Exception:
+            return []
+
+    return _cached("expired:expiries:" + str(underlying_key), load, _EXPIRED_DISCOVERY_TTL)
+
+
+def _expired_future_contracts(underlying_key: str, expiry_date: str) -> list[dict]:
+    if not underlying_key or not expiry_date:
+        return []
+
+    def load():
+        try:
+            payload = _expired_get(
+                "/expired-instruments/future/contract",
+                params={"instrument_key": underlying_key, "expiry_date": expiry_date},
+            )
+            rows = payload.get("data") or []
+            return rows if isinstance(rows, list) else []
+        except Exception:
+            return []
+
+    return _cached(
+        f"expired:contracts:{underlying_key}:{expiry_date}",
+        load,
+        _EXPIRED_DISCOVERY_TTL,
+    )
+
+
+def _expired_series(expired_instrument_key: str, expiry_date: str) -> list[tuple[datetime, float]]:
+    if not expired_instrument_key or not expiry_date:
+        return []
+
+    def load():
+        try:
+            encoded = quote(expired_instrument_key, safe="")
+            start = (date.fromisoformat(expiry_date) - timedelta(days=120)).isoformat()
+            payload = _expired_get(
+                f"/expired-instruments/historical-candle/{encoded}/day/{expiry_date}/{start}",
+            )
+            candles = (payload.get("data") or {}).get("candles") or []
+        except Exception:
+            return []
+
+        rows = []
+        for candle in candles:
+            if len(candle) < 5:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(candle[0]).replace("Z", "+00:00"))
+                close = float(candle[4])
+            except (TypeError, ValueError):
+                continue
+            if close > 0:
+                rows.append((dt, close))
+        rows.sort(key=lambda item: item[0])
+        return rows
+
+    return _cached(
+        f"expired:series:{expired_instrument_key}",
+        load,
+        _EXPIRED_HISTORY_TTL,
+    )
+
+
+def _continuous_derivative_series(
+    row: dict,
+    *,
+    unit: str = "months",
+    lookback_days: int = 365 * 5 + 45,
+) -> tuple[list[tuple[datetime, float]], str]:
+    """Stitch expiring futures into one continuous trend series."""
+    primary_key = row.get("instrument_key") or row.get("symbol")
+    underlying_key = row.get("underlying_key")
+    segment = str(row.get("segment") or "").upper()
+
+    # Upstox currently does not expose expiry discovery for MCX. Do not
+    # invent MCX expiry dates; use its normal contract history until an
+    # expired-contract key is discoverable.
+    if not underlying_key or segment == "MCX_FO":
+        return _series(primary_key, unit=unit), "single-contract"
+
+    today = date.today()
+    start_date = today - timedelta(days=lookback_days)
+    pieces = []
+
+    try:
+        pieces.extend(_series(primary_key, unit=unit))
+    except Exception:
+        pass
+
+    # Upstox's expiry discovery currently exposes up to six months of
+    # historical expiries. Stitch every discovered future contract.
+    for expiry in _expired_expiries(str(underlying_key)):
+        try:
+            expiry_date = date.fromisoformat(expiry)
+        except ValueError:
+            continue
+        if expiry_date >= today or expiry_date < start_date:
+            continue
+
+        contracts = _expired_future_contracts(str(underlying_key), expiry)
+        candidates = [
+            contract for contract in contracts
+            if str(contract.get("segment") or "").upper() == segment
+            and str(contract.get("instrument_type") or "").upper() == "FUT"
+        ]
+        if not candidates:
+            continue
+
+        contract = candidates[0]
+        expired_key = contract.get("instrument_key")
+        if expired_key:
+            pieces.extend(_expired_series(str(expired_key), expiry))
+
+    merged = {}
+    for dt, close in sorted(pieces, key=lambda item: item[0]):
+        if dt.date() >= start_date:
+            merged[dt] = close
+
+    rows = sorted(merged.items(), key=lambda item: item[0])
+    return rows, "continuous-rollover" if rows else "single-contract"
+
+
 def _series(instrument_key: str, unit: str = "months") -> list[tuple[datetime, float]]:
     def load():
         end = date.today()
@@ -194,6 +338,20 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         if underlying_key and underlying_key != primary_key:
             history_candidates.append((underlying_key, "Underlying market history (Upstox)"))
 
+        if str(row.get("instrument_type") or "").upper() == "FUT" and row.get("underlying_key"):
+            try:
+                with _HISTORY_GATE:
+                    series, mode = _continuous_derivative_series(row, unit="months")
+                    metrics = _metrics(series)
+                if metrics.get("available"):
+                    item.update(metrics)
+                    item["history_source"] = "Upstox expired-contract continuous rollover"
+                    item["history_mode"] = mode
+                    item["history_instrument_key"] = row.get("instrument_key") or row.get("symbol")
+                    return item
+            except Exception:
+                pass
+
         for key, source in history_candidates:
             try:
                 with _HISTORY_GATE:
@@ -201,6 +359,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                 if metrics.get("available"):
                     item.update(metrics)
                     item["history_source"] = source
+                    item["history_mode"] = "single-instrument"
                     item["history_instrument_key"] = key
                     return item
             except Exception:
@@ -263,6 +422,23 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
             history_candidates.append((str(key), "Upstox historical candles"))
             seen_keys.add(str(key))
 
+        if str(representative.get("instrument_type") or "").upper() == "FUT" and representative.get("underlying_key"):
+            try:
+                with _HISTORY_GATE:
+                    series, mode = _continuous_derivative_series(representative, unit="months")
+                    metrics = _metrics(series)
+                if metrics.get("available"):
+                    item = dict(representative)
+                    item["instrument_key"] = entity_key
+                    item["entity_key"] = entity_key
+                    item.update(metrics)
+                    item["history_source"] = "Upstox expired-contract continuous rollover"
+                    item["history_mode"] = mode
+                    item["history_instrument_key"] = representative.get("instrument_key") or representative.get("symbol")
+                    return entity_key, item
+            except Exception:
+                pass
+
         for history_key, source in history_candidates:
             try:
                 with _HISTORY_GATE:
@@ -273,6 +449,7 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                     item["entity_key"] = entity_key
                     item.update(metrics)
                     item["history_source"] = source
+                    item["history_mode"] = "single-instrument"
                     item["history_instrument_key"] = history_key
                     return entity_key, item
             except Exception:
