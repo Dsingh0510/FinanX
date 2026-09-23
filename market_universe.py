@@ -241,6 +241,19 @@ def _quotes(keys):
     return out
 
 
+def _quote_match_tokens(value):
+    """Return stable exchange/symbol tokens for Upstox quote-key variants."""
+    text = str(value or "").upper().replace("|", ":")
+    parts = text.split(":", 1)
+    if len(parts) != 2:
+        return {re.sub(r"[^A-Z0-9]", "", text)}
+    exchange, symbol = parts
+    return {
+        f"{exchange}:{re.sub(r'[^A-Z0-9]', '', symbol)}",
+        re.sub(r"[^A-Z0-9]", "", symbol),
+    }
+
+
 def _lookup_quote(quotes, key):
     if not key:
         return {}
@@ -253,6 +266,15 @@ def _lookup_quote(quotes, key):
     for variant in variants:
         row = quotes.get(variant)
         if isinstance(row, dict):
+            return row
+
+    # Global indicators can be returned by symbol label (for example
+    # GLOBAL_INDICATOR:USD INR) while the instrument file uses
+    # GLOBAL_INDICATOR|USDINR. Match the exchange + normalized symbol as a
+    # final fallback instead of treating a valid live quote as missing.
+    wanted = _quote_match_tokens(key)
+    for returned_key, row in quotes.items():
+        if isinstance(row, dict) and wanted.intersection(_quote_match_tokens(returned_key)):
             return row
     return {}
 
@@ -957,42 +979,41 @@ def market_now():
         if item:
             add(label,_instrument_key(item),"commodity",unit)
 
-    # Upstox provides a dedicated GLOBAL_INDICATOR for USD INR.
-    # Use it as the homepage benchmark so the value does not depend on an
-    # expiring currency-futures contract.
-    usd_inr_key = _find_global_indicator_key("USD INR", "USDINR")
-    if usd_inr_key:
-        add("USD/INR", usd_inr_key, "currency", "₹/USD")
-    else:
-        rows=[x for x in all_futures if "USDINR" in (
-            str(x.get("underlying_symbol","")).upper()+" "
-            +str(x.get("name","")).upper()+" "
-            +str(x.get("trading_symbol","")).upper()
-        ) and str(x.get("instrument_type","")).upper()=="FUT"]
-        item=_find_nearest_future(rows,lambda x:True)
+    # Currency cards are sourced from the NCD_FO currency futures
+    # universe first, so Market Now and Market Analysis use the same
+    # currency-derivatives source.
+    ncd_currency_rows = [
+        x for x in all_futures
+        if str(x.get("segment", "")).upper() == "NCD_FO"
+        and str(x.get("instrument_type", "")).upper() == "FUT"
+        and str(x.get("underlying_type", "")).upper() == "CUR"
+    ]
+    currency_targets = [
+        ("USD/INR", ("USDINR", "USD INR"), "₹/USD"),
+        ("EUR/INR", ("EURINR", "EUR INR"), "₹/EUR"),
+        ("GBP/INR", ("GBPINR", "GBP INR"), "₹/GBP"),
+        ("JPY/INR", ("JPYINR", "JPY INR"), "₹/JPY"),
+        ("AUD/INR", ("AUDINR", "AUD INR"), "₹/AUD"),
+        ("CNY/INR", ("CNYINR", "CNY INR"), "₹/CNY"),
+    ]
+    for label, terms, unit in currency_targets:
+        rows = [
+            x for x in ncd_currency_rows
+            if any(term in (
+                str(x.get("underlying_symbol", "")).upper() + " "
+                + str(x.get("name", "")).upper() + " "
+                + str(x.get("trading_symbol", "")).upper()
+            ) for term in terms)
+        ]
+        item = _find_nearest_future(rows, lambda x: True)
         if item:
-            add("USD/INR",_instrument_key(item),"currency", "₹/USD")
+            add(label, _instrument_key(item), "currency", unit)
+            continue
 
-    for label,terms in [
-        ("EUR/INR",("EUR INR","EURINR")),
-        ("GBP/INR",("GBP INR","GBPINR")),
-        ("JPY/INR",("JPY INR","JPYINR")),
-        ("AUD/INR",("AUD INR","AUDINR")),
-        ("CNY/INR",("CNY INR","CNYINR")),
-    ]:
+        # Last-resort live indicator only when NCD has no active contract.
         indicator_key = _find_global_indicator_key(*terms)
         if indicator_key:
-            add(label, indicator_key, "currency", "₹/currency")
-            continue
-        rows=[x for x in all_futures if any(term in (
-            str(x.get("underlying_symbol","")).upper()+" "
-            +str(x.get("name","")).upper()+" "
-            +str(x.get("trading_symbol","")).upper()
-        ) for term in terms)
-              and str(x.get("instrument_type","")).upper()=="FUT"]
-        item=_find_nearest_future(rows,lambda x:True)
-        if item:
-            add(label,_instrument_key(item),"currency", "₹/currency")
+            add(label, indicator_key, "currency", unit)
 
     for row in _bond_instruments(25):
         symbol=str(row.get("trading_symbol") or "").strip()
