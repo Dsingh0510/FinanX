@@ -1082,11 +1082,12 @@ def market_now():
     # source. NCD_FO futures remain the analysis/derivatives source.
     # This avoids blank cards when an individual currency future is outside
     # its trading session or has no current quote.
+    # Use the same active NCD_FO currency universe used by Market Analysis.
+    # Choosing the nearest expiry alone can select an illiquid contract whose
+    # quote is unavailable even when the active/liquid contract has a value.
     ncd_currency_rows = [
-        x for x in all_futures
-        if str(x.get("segment", "")).upper() == "NCD_FO"
-        and str(x.get("instrument_type", "")).upper() == "FUT"
-        and str(x.get("underlying_type", "")).upper() == "CUR"
+        x for x in _active_rows({"NCD_FO"}, {"FUT"})
+        if str(x.get("underlying_type", "")).upper() == "CUR"
     ]
     currency_targets = [
         ("USD/INR", ("USDINR", "USD INR"), "₹/USD"),
@@ -1097,12 +1098,6 @@ def market_now():
         ("CNY/INR", ("CNYINR", "CNY INR"), "₹/CNY"),
     ]
     for label, terms, unit in currency_targets:
-        indicator_key = _global_currency_indicator_key(label, *terms)
-        if indicator_key:
-            add(label, indicator_key, "currency", unit)
-            continue
-
-        # Only use NCD_FO when Upstox has no GLOBAL_INDICATOR for this pair.
         rows = [
             x for x in ncd_currency_rows
             if any(term in (
@@ -1111,9 +1106,24 @@ def market_now():
                 + str(x.get("trading_symbol", "")).upper()
             ) for term in terms)
         ]
-        item = _find_nearest_future(rows, lambda x: True)
+        # Prefer the most liquid active contract so Market Now and Market
+        # Analysis point at the same usable currency universe.
+        rows.sort(
+            key=lambda x: (
+                -(x.get("volume") or x.get("oi") or 0),
+                x.get("_expiry_ms") or 0,
+            )
+        )
+        item = rows[0] if rows else None
         if item:
             add(label, _instrument_key(item), "currency", unit)
+            continue
+
+        # No active NCD contract for this pair: fall back to a supported
+        # GLOBAL_INDICATOR (for example USD/INR).
+        indicator_key = _global_currency_indicator_key(label, *terms)
+        if indicator_key:
+            add(label, indicator_key, "currency", unit)
 
     for row in _bond_instruments(25):
         symbol=str(row.get("trading_symbol") or "").strip()
