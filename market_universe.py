@@ -992,9 +992,10 @@ def market_now():
         if item:
             add(label,_instrument_key(item),"commodity",unit)
 
-    # Currency cards are sourced from the NCD_FO currency futures
-    # universe first, so Market Now and Market Analysis use the same
-    # currency-derivatives source.
+    # Currency display uses Upstox GLOBAL_INDICATOR as the live spot-like
+    # source. NCD_FO futures remain the analysis/derivatives source.
+    # This avoids blank cards when an individual currency future is outside
+    # its trading session or has no current quote.
     ncd_currency_rows = [
         x for x in all_futures
         if str(x.get("segment", "")).upper() == "NCD_FO"
@@ -1010,6 +1011,10 @@ def market_now():
         ("CNY/INR", ("CNYINR", "CNY INR"), "₹/CNY"),
     ]
     for label, terms, unit in currency_targets:
+        indicator_key = _find_global_indicator_key(*terms)
+        if indicator_key:
+            add(label, indicator_key, "currency", unit)
+            continue
         rows = [
             x for x in ncd_currency_rows
             if any(term in (
@@ -1021,12 +1026,6 @@ def market_now():
         item = _find_nearest_future(rows, lambda x: True)
         if item:
             add(label, _instrument_key(item), "currency", unit)
-            continue
-
-        # Last-resort live indicator only when NCD has no active contract.
-        indicator_key = _find_global_indicator_key(*terms)
-        if indicator_key:
-            add(label, indicator_key, "currency", unit)
 
     for row in _bond_instruments(25):
         symbol=str(row.get("trading_symbol") or "").strip()
