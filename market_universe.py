@@ -352,6 +352,9 @@ def _quote_one(key):
 
 
 def _quote_value(row):
+    # V3 Full Quote normally supplies last_price. Keep cp/previous-close
+    # separate so a closed session can still display the latest known value
+    # without pretending it is a live tick.
     ltp = row.get("last_price")
     prev = row.get("prev_close_price") or row.get("cp")
     try:
@@ -366,6 +369,16 @@ def _quote_value(row):
             prev = None
     except (TypeError, ValueError):
         prev = None
+    if ltp is None:
+        # Some quote variants expose the current OHLC close but omit
+        # last_price. It is the latest traded/closed value, not a fabricated
+        # price, so use it as a display fallback.
+        try:
+            ohlc_close = float((row.get("ohlc") or {}).get("close"))
+            if ohlc_close > 0:
+                ltp = ohlc_close
+        except (TypeError, ValueError):
+            pass
     change = ((ltp / prev) - 1) * 100 if ltp is not None and prev is not None else None
     return ltp, change
 
@@ -1061,6 +1074,54 @@ def market_now():
                     row = {}
                 if row:
                     output_by_key[key] = row
+
+    # Currency Market Now: NCD_FO remains the primary source, but if an NCD
+    # contract has no quote at the moment, use Upstox's GLOBAL_INDICATOR
+    # currency benchmark as the live display fallback. This is necessary
+    # because the global USD/INR indicator is explicitly supported by
+    # Upstox's live quote APIs, while an individual currency future can be
+    # unavailable outside its trading session. Market Analysis continues to
+    # use NCD_FO entities.
+    currency_global_keys = {}
+    for label, terms, _unit in currency_targets:
+        ncd_target = next(
+            ((target_label, target_key) for target_label, target_key, target_kind, _u in targets
+             if target_label == label and target_kind == "currency"),
+            None,
+        )
+        if not ncd_target:
+            continue
+        target_label, target_key = ncd_target
+        q = _lookup_quote(output_by_key, target_key)
+        q_ltp, _q_change = _quote_value(q)
+        if q_ltp is not None:
+            continue
+        global_key = _find_global_indicator_key(*terms)
+        if global_key:
+            currency_global_keys[target_label] = global_key
+
+    if currency_global_keys:
+        global_quotes = _quotes(list(currency_global_keys.values()))
+        missing_global = [
+            key for key in currency_global_keys.values()
+            if not _lookup_quote(global_quotes, key)
+        ]
+        if missing_global:
+            global_quotes.update(_ltp_quotes(missing_global))
+        for label, global_key in currency_global_keys.items():
+            global_row = _lookup_quote(global_quotes, global_key)
+            if global_row:
+                # Replace only the unresolved NCD card's quote. The card
+                # remains labelled as currency and carries the actual source
+                # key for traceability.
+                target = next(
+                    ((target_label, target_key, target_kind, target_unit)
+                     for target_label, target_key, target_kind, target_unit in targets
+                     if target_label == label and target_kind == "currency"),
+                    None,
+                )
+                if target:
+                    output_by_key[target[1]] = global_row
 
     output=[]
     for label,key,kind,unit in targets:
