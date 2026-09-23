@@ -211,6 +211,31 @@ def _quotes(keys):
 
     data = fetch_chunk(misses)
 
+    # Global indicators were introduced into the existing V2 quote API as
+    # well as V3. If the V3 batch does not return a GLOBAL_INDICATOR quote,
+    # retry only those keys through V2. This is deliberately scoped to global
+    # instruments so ordinary market quotes continue using V3.
+    global_misses = [
+        key for key in misses
+        if str(key).upper().startswith("GLOBAL_INDICATOR|")
+    ]
+    unresolved_global = [
+        key for key in global_misses
+        if not _lookup_quote(data, key)
+    ]
+    if unresolved_global:
+        try:
+            payload = _get(
+                "https://api.upstox.com/v2/market-quote/quotes",
+                {"instrument_key": ",".join(unresolved_global)},
+                timeout=10,
+            )
+            legacy_data = payload.get("data") or {}
+            if legacy_data:
+                data.update(legacy_data)
+        except Exception:
+            pass
+
     # Upstox returns exchange-keyed objects. Cache each successful item
     # separately so future requests with overlapping universes reuse them.
     stamp = datetime.now(timezone.utc).timestamp()
@@ -309,7 +334,25 @@ def _ltp_quotes(keys):
         )
         data = payload.get("data") or {}
     except Exception:
-        return {}
+        data = {}
+
+    missing_global = [
+        key for key in keys
+        if str(key).upper().startswith("GLOBAL_INDICATOR|")
+        and not _lookup_quote(data, key)
+    ]
+    if missing_global:
+        try:
+            payload = _get(
+                "https://api.upstox.com/v2/market-quote/ltp",
+                {"instrument_key": ",".join(missing_global)},
+                timeout=10,
+            )
+            legacy_data = payload.get("data") or {}
+            if legacy_data:
+                data.update(legacy_data)
+        except Exception:
+            pass
 
     output = {}
     for returned_key, value in data.items():
