@@ -259,7 +259,7 @@ def _series(instrument_key: str, unit: str = "months") -> list[tuple[datetime, f
         rows.sort(key=lambda x: x[0])
         return rows
 
-    return _cached(f"history:v2:{unit}:" + instrument_key, load, _HISTORY_TTL)
+    return _cached(f"history:v3:{unit}:" + instrument_key, load, _HISTORY_TTL)
 
 
 def _metrics(rows: list[tuple[datetime, float]]) -> dict:
@@ -469,6 +469,31 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                     for metric_key in ("return_1y", "return_3y", "return_5y"):
                         if metrics.get(metric_key) is None and underlying_metrics.get(metric_key) is not None:
                             metrics[metric_key] = underlying_metrics[metric_key]
+
+                    # Currency futures are the correct NCD_FO source for
+                    # derivative history, but a current NCD contract cannot
+                    # reconstruct several years after expiry. Upstox explicitly
+                    # provides USD/INR as a GLOBAL_INDICATOR with long historical
+                    # candles. Use it only for horizons still missing after
+                    # NCD_FO/underlying history, never as the primary 1Y result.
+                    currency_indicator_metrics = {}
+                    if str(representative.get("underlying_type") or "").upper() == "CUR":
+                        try:
+                            from market_universe import _find_global_indicator_key
+                            indicator_key = _find_global_indicator_key(
+                                representative.get("underlying_symbol"),
+                                representative.get("name"),
+                                representative.get("trading_symbol"),
+                            )
+                            if indicator_key:
+                                currency_indicator_metrics = _metrics(
+                                    _series(str(indicator_key), unit="months")
+                                )
+                                for metric_key in ("return_1y", "return_3y", "return_5y"):
+                                    if metrics.get(metric_key) is None and currency_indicator_metrics.get(metric_key) is not None:
+                                        metrics[metric_key] = currency_indicator_metrics[metric_key]
+                        except Exception:
+                            currency_indicator_metrics = {}
 
                 if metrics.get("available"):
                     item = dict(representative)
