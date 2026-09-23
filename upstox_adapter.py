@@ -379,7 +379,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         if underlying_key and underlying_key != primary_key:
             history_candidates.append((underlying_key, "Underlying market history (Upstox)"))
 
-        if str(row.get("instrument_type") or "").upper() == "FUT" and row.get("underlying_key"):
+        if str(row.get("instrument_type") or "").upper() == "FUT":
             try:
                 with _HISTORY_GATE:
                     series, mode = _continuous_derivative_series(row, unit="months")
@@ -391,7 +391,9 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                     # This keeps 1Y/3Y/5Y independently real while preserving
                     # the continuous-roll series wherever it is available.
                     underlying_metrics = {}
-                    if any(metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")):
+                    if row.get("underlying_key") and any(
+                        metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")
+                    ):
                         underlying_series = _series(str(row.get("underlying_key")), unit="months")
                         underlying_metrics = _metrics(underlying_series)
                     for metric_key in ("return_1y", "return_3y", "return_5y"):
@@ -486,7 +488,7 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
             history_candidates.append((str(key), "Upstox historical candles"))
             seen_keys.add(str(key))
 
-        if str(representative.get("instrument_type") or "").upper() == "FUT" and representative.get("underlying_key"):
+        if str(representative.get("instrument_type") or "").upper() == "FUT":
             try:
                 with _HISTORY_GATE:
                     series, mode = _continuous_derivative_series(representative, unit="months")
@@ -497,7 +499,9 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                     # important for NCD/currency and MCX futures, where the
                     # current contract is much shorter than 3Y/5Y history.
                     underlying_metrics = {}
-                    if any(metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")):
+                    if representative.get("underlying_key") and any(
+                        metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")
+                    ):
                         underlying_series = _series(str(representative.get("underlying_key")), unit="months")
                         underlying_metrics = _metrics(underlying_series)
                     for metric_key in ("return_1y", "return_3y", "return_5y"):
