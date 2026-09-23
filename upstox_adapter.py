@@ -272,7 +272,11 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
         "volatility_annualized": None,
         "max_drawdown": None,
     }
-    if len(rows) < 20:
+    # Monthly history can legitimately contain only ~13 candles for a
+    # one-year horizon. Horizon availability is checked independently below,
+    # so do not reject valid 1Y/3Y series just because they have fewer than
+    # twenty monthly observations.
+    if len(rows) < 2:
         return out
 
     latest_dt, latest = rows[-1]
