@@ -259,7 +259,7 @@ def _series(instrument_key: str, unit: str = "months") -> list[tuple[datetime, f
         rows.sort(key=lambda x: x[0])
         return rows
 
-    return _cached(f"history:{unit}:" + instrument_key, load, _HISTORY_TTL)
+    return _cached(f"history:v2:{unit}:" + instrument_key, load, _HISTORY_TTL)
 
 
 def _metrics(rows: list[tuple[datetime, float]]) -> dict:
