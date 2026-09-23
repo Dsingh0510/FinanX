@@ -598,7 +598,7 @@ def history_universe():
         TRACKING_LIMITS["commodities"],
     )
     currency_rows = _unique_underlying_rows([
-        r for r in _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+        r for r in _active_rows({"NCD_FO"}, {"FUT"})
         if r.get("underlying_type") == "CUR"
     ], TRACKING_LIMITS["currency"])
 
@@ -713,7 +713,7 @@ def compare_gold():
 
 
 def compare_currency():
-    rows = _active_rows({"NSE_FO", "NCD_FO", "BCD_FO"}, {"FUT"})
+    rows = _active_rows({"NCD_FO"}, {"FUT"})
     rows = [r for r in rows if r.get("underlying_type") == "CUR"]
     rows = _unique_underlying_rows(rows, TRACKING_LIMITS["currency"])
     quotes = _quotes([_instrument_key(r) for r in rows])
