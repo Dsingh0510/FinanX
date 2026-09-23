@@ -97,6 +97,22 @@ def _normalize_instrument_label(value):
     return re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
 
 
+def _global_currency_indicator_key(label, *terms):
+    """Resolve a live GLOBAL_INDICATOR key without making Market Now depend
+    on the global instrument-file parser.
+    
+    Upstox documents USD INR as a GLOBAL_INDICATOR and requires the exact
+    instrument_key from the global instrument file. Keep the known USD/INR
+    trading symbol as a deterministic fallback, then use the file for any
+    other supported indicator.
+    """
+    normalized = _normalize_instrument_label(" ".join(
+        [str(label or "")] + [str(term or "") for term in terms]
+    ))
+    if "USD INR" in normalized or "USDINR" in normalized:
+        return "GLOBAL_INDICATOR|USDINR"
+    return _find_global_indicator_key(*terms)
+
 def _find_global_indicator_key(*terms):
     wanted = [
         _normalize_instrument_label(term)
@@ -1011,7 +1027,7 @@ def market_now():
         ("CNY/INR", ("CNYINR", "CNY INR"), "₹/CNY"),
     ]
     for label, terms, unit in currency_targets:
-        indicator_key = _find_global_indicator_key(*terms)
+        indicator_key = _global_currency_indicator_key(label, *terms)
         if indicator_key:
             add(label, indicator_key, "currency", unit)
             continue
@@ -1095,7 +1111,7 @@ def market_now():
         q_ltp, _q_change = _quote_value(q)
         if q_ltp is not None:
             continue
-        global_key = _find_global_indicator_key(*terms)
+        global_key = _global_currency_indicator_key(target_label, *terms)
         if global_key:
             currency_global_keys[target_label] = global_key
 
