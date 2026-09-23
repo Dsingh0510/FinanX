@@ -332,6 +332,36 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     return out
 
 
+def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, float]]) -> dict:
+    """Fill missing long horizons from the longest real derivative history.
+    
+    This is used only for derivative-heavy segments where Upstox cannot always
+    expose a complete multi-year expired-contract chain. The annualized result
+    is explicitly marked as such instead of pretending it is a true 3Y/5Y
+    contract return.
+    """
+    if not series or len(series) < 2:
+        return metrics
+    first_dt, first = series[0]
+    last_dt, last = series[-1]
+    if first <= 0 or last <= 0:
+        return metrics
+    span_days = max((last_dt - first_dt).total_seconds() / 86400.0, 0.0)
+    if span_days < 180:
+        return metrics
+    years = max(span_days / 365.25, 0.5)
+    annualized = ((last / first) ** (1.0 / years) - 1.0) * 100.0
+    if not math.isfinite(annualized):
+        return metrics
+    annualized = round(max(-99.0, min(200.0, annualized)), 2)
+    methods = metrics.setdefault("horizon_methods", {})
+    for key in ("return_1y", "return_3y", "return_5y"):
+        if metrics.get(key) is None:
+            metrics[key] = annualized
+            methods[key] = "available-history-annualized"
+    return metrics
+
+
 def _history_for_rows(rows: list[dict], category: str, limit: int | None = None, mf_cache: dict | None = None) -> list[dict]:
     """Enrich tracked entities with Upstox history, using stable underlyings when available."""
     if not rows:
@@ -366,6 +396,9 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                     for metric_key in ("return_1y", "return_3y", "return_5y"):
                         if metrics.get(metric_key) is None and underlying_metrics.get(metric_key) is not None:
                             metrics[metric_key] = underlying_metrics[metric_key]
+
+                    if str(category).lower() in {"entities", "gold", "commodities", "currency"}:
+                        metrics = _fill_derivative_horizon_gaps(metrics, series)
 
                 if metrics.get("available"):
                     item.update(metrics)
@@ -494,6 +527,9 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                                         metrics[metric_key] = currency_indicator_metrics[metric_key]
                         except Exception:
                             currency_indicator_metrics = {}
+
+                    if str(representative.get("underlying_type") or "").upper() in {"COM", "CUR"}:
+                        metrics = _fill_derivative_horizon_gaps(metrics, series)
 
                 if metrics.get("available"):
                     item = dict(representative)
