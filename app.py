@@ -188,8 +188,23 @@ def analyze_fast():
         return jsonify({'error': f'Fast analysis service error: {exc}'}), 500
 
 
-@app.post('/api/analyze')
+@app.route('/api/analyze', methods=['GET', 'POST'])
 def analyze():
+    # GET is a read-only diagnostic path so opening /api/analyze in a browser
+    # does not return HTTP 405. The dashboard continues using POST for plans.
+    if request.method == 'GET':
+        try:
+            market = _engine().category_market_analysis(allow_stale=True)
+            return jsonify({
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'mode': 'market-analysis-readonly',
+                'market': market,
+                'tracking': market.get('_tracking') or {},
+            })
+        except Exception as exc:
+            logger.exception("Read-only analysis endpoint failed")
+            return jsonify({'error': f'Analysis service error: {exc}'}), 503
+
     try:
         inputs = _parse_plan_inputs(request.get_json(force=True))
         amount = inputs['amount']
