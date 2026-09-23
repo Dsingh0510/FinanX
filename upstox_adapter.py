@@ -277,20 +277,26 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
 
     latest_dt, latest = rows[-1]
 
-    def nearest(days: int):
+    def nearest(days: int, tolerance_days: int):
         target = latest_dt - timedelta(days=days)
         if not rows:
             return None
-        return min(rows, key=lambda x: abs((x[0] - target).total_seconds()))[1]
+        candidate = min(rows, key=lambda x: abs((x[0] - target).total_seconds()))
+        distance = abs((candidate[0] - target).total_seconds()) / 86400
+        return candidate if distance <= tolerance_days else None
 
-    p1 = nearest(365)
-    p3 = nearest(365 * 3)
-    p5 = nearest(365 * 5)
+    # Do not manufacture a 3Y/5Y number from a short contract history.
+    # Each horizon is independently available only when the source actually
+    # reaches that historical point. This prevents a six-month futures series
+    # from being incorrectly labelled as a five-year CAGR.
+    p1 = nearest(365, 45)
+    p3 = nearest(365 * 3, 120)
+    p5 = nearest(365 * 5, 180)
 
     try:
-        r1 = ((latest / p1) - 1) * 100 if p1 else None
-        r3 = ((latest / p3) ** (1 / 3) - 1) * 100 if p3 else None
-        r5 = ((latest / p5) ** (1 / 5) - 1) * 100 if p5 else None
+        r1 = ((latest / p1[1]) - 1) * 100 if p1 else None
+        r3 = ((latest / p3[1]) ** (1 / 3) - 1) * 100 if p3 else None
+        r5 = ((latest / p5[1]) ** (1 / 5) - 1) * 100 if p5 else None
     except (TypeError, ValueError, ZeroDivisionError):
         r1 = r3 = r5 = None
 
@@ -343,10 +349,30 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                 with _HISTORY_GATE:
                     series, mode = _continuous_derivative_series(row, unit="months")
                     metrics = _metrics(series)
+
+                    # A derivative contract can have enough data for one
+                    # horizon but not the longer horizons. Backfill only the
+                    # missing horizons from the stable underlying instrument.
+                    # This keeps 1Y/3Y/5Y independently real while preserving
+                    # the continuous-roll series wherever it is available.
+                    underlying_metrics = {}
+                    if any(metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")):
+                        underlying_series = _series(str(row.get("underlying_key")), unit="months")
+                        underlying_metrics = _metrics(underlying_series)
+                    for metric_key in ("return_1y", "return_3y", "return_5y"):
+                        if metrics.get(metric_key) is None and underlying_metrics.get(metric_key) is not None:
+                            metrics[metric_key] = underlying_metrics[metric_key]
+
                 if metrics.get("available"):
                     item.update(metrics)
-                    item["history_source"] = "Upstox expired-contract continuous rollover"
-                    item["history_mode"] = mode
+                    item["history_source"] = (
+                        "Upstox expired-contract continuous rollover"
+                        if not underlying_metrics
+                        else "Upstox continuous rollover + underlying long-history backfill"
+                    )
+                    item["history_mode"] = (
+                        mode if not underlying_metrics else "continuous-rollover+underlying-backfill"
+                    )
                     item["history_instrument_key"] = row.get("instrument_key") or row.get("symbol")
                     return item
             except Exception:
@@ -427,13 +453,32 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                 with _HISTORY_GATE:
                     series, mode = _continuous_derivative_series(representative, unit="months")
                     metrics = _metrics(series)
+
+                    # Use the underlying only for horizons the contract-roll
+                    # series genuinely cannot cover. This is especially
+                    # important for NCD/currency and MCX futures, where the
+                    # current contract is much shorter than 3Y/5Y history.
+                    underlying_metrics = {}
+                    if any(metrics.get(k) is None for k in ("return_1y", "return_3y", "return_5y")):
+                        underlying_series = _series(str(representative.get("underlying_key")), unit="months")
+                        underlying_metrics = _metrics(underlying_series)
+                    for metric_key in ("return_1y", "return_3y", "return_5y"):
+                        if metrics.get(metric_key) is None and underlying_metrics.get(metric_key) is not None:
+                            metrics[metric_key] = underlying_metrics[metric_key]
+
                 if metrics.get("available"):
                     item = dict(representative)
                     item["instrument_key"] = entity_key
                     item["entity_key"] = entity_key
                     item.update(metrics)
-                    item["history_source"] = "Upstox expired-contract continuous rollover"
-                    item["history_mode"] = mode
+                    item["history_source"] = (
+                        "Upstox expired-contract continuous rollover"
+                        if not underlying_metrics
+                        else "Upstox continuous rollover + underlying long-history backfill"
+                    )
+                    item["history_mode"] = (
+                        mode if not underlying_metrics else "continuous-rollover+underlying-backfill"
+                    )
                     item["history_instrument_key"] = representative.get("instrument_key") or representative.get("symbol")
                     return entity_key, item
             except Exception:
