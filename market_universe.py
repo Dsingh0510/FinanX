@@ -1012,6 +1012,33 @@ def _nearest_future_by_terms(rows, terms):
     return _find_nearest_future(matches, lambda x: True)
 
 
+def _upstox_currency_converter_quote(label):
+    """Last-resort latest FX value from Upstox's public currency converter."""
+    pair = str(label or "").replace("/", "-").lower()
+    if not pair:
+        return None, None, None
+    url = f"https://upstox.com/currency-converter/{pair}/"
+    try:
+        r = requests.get(url, headers={"User-Agent": "FinanX/1.0"}, timeout=8)
+        r.raise_for_status()
+        html = r.text
+        match = re.search(r"Price\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)", html, re.I)
+        if not match:
+            match = re.search(
+                r"1\\s+[A-Z]{3}\\s*=\\s*₹?\\s*([0-9]+(?:\\.[0-9]+)?)",
+                html,
+                re.I,
+            )
+        if not match:
+            return None, None, None
+        value = float(match.group(1))
+        if value <= 0 or not math.isfinite(value):
+            return None, None, None
+        return value, None, datetime.now(timezone.utc).isoformat()
+    except Exception:
+        return None, None, None
+
+
 def market_now():
     """Build the homepage Market Now board from current Upstox V3 quotes only."""
     targets=[]; seen=set()
@@ -1073,7 +1100,6 @@ def market_now():
         indicator_key = _global_currency_indicator_key(label, *terms)
         if indicator_key:
             add(label, indicator_key, "currency", unit)
-            continue
         rows = [
             x for x in ncd_currency_rows
             if any(term in (
@@ -1185,6 +1211,21 @@ def market_now():
     for label,key,kind,unit in targets:
         q=output_by_key.get(key, {}) if key else {}
         ltp,change=_quote_value(q)
+        if ltp is None and kind == "currency":
+            converter_value, converter_change, converter_at = _upstox_currency_converter_quote(label)
+            if converter_value is not None:
+                output.append({
+                    "label": label,
+                    "value": round(float(converter_value), 4),
+                    "today_change": converter_change,
+                    "kind": kind,
+                    "unit": unit,
+                    "freshness": "latest",
+                    "instrument_key": key,
+                    "source": "Upstox currency converter",
+                    "date": converter_at,
+                })
+                continue
         if ltp is None:
             output.append({
                 "label":label,"value":None,"today_change":None,
