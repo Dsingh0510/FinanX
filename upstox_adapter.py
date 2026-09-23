@@ -910,7 +910,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
 
 _MARKET_HIGHLIGHTS = []
 _MARKET_HIGHLIGHTS_AT = 0.0
-_MARKET_HIGHLIGHTS_TTL = 45
+_MARKET_HIGHLIGHTS_TTL = 20
 _HEALTHCHECK_TTL = 45
 _HEALTHCHECK_CACHE = None
 _HEALTHCHECK_AT = 0.0
