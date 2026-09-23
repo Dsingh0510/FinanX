@@ -1022,10 +1022,10 @@ def _upstox_currency_converter_quote(label):
         r = requests.get(url, headers={"User-Agent": "FinanX/1.0"}, timeout=8)
         r.raise_for_status()
         html = r.text
-        match = re.search(r"Price\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)", html, re.I)
+        match = re.search(r"Price\s*:\s*([0-9]+(?:\.[0-9]+)?)", html, re.I)
         if not match:
             match = re.search(
-                r"1\\s+[A-Z]{3}\\s*=\\s*₹?\\s*([0-9]+(?:\\.[0-9]+)?)",
+                r"1\s+[A-Z]{3}\s*=\s*₹?\s*([0-9]+(?:\.[0-9]+)?)",
                 html,
                 re.I,
             )
