@@ -1100,6 +1100,9 @@ def market_now():
         indicator_key = _global_currency_indicator_key(label, *terms)
         if indicator_key:
             add(label, indicator_key, "currency", unit)
+            continue
+
+        # Only use NCD_FO when Upstox has no GLOBAL_INDICATOR for this pair.
         rows = [
             x for x in ncd_currency_rows
             if any(term in (
