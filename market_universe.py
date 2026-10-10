@@ -538,15 +538,46 @@ def _active_rows(segments, types=None):
 
 
 def compare_fno():
-    rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
-    expiries = [r["_expiry_ms"] for r in rows if r.get("_expiry_ms")]
-    if expiries:
-        nearest = min(expiries)
-        rows = [r for r in rows if r.get("_expiry_ms") == nearest]
+    all_rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
+    futures_all = [
+        r for r in all_rows
+        if r.get("instrument_type") == "FUT"
+        and r.get("underlying_type") in ("EQUITY", "INDEX")
+    ]
+    options_all = [
+        r for r in all_rows
+        if r.get("instrument_type") in ("CE", "PE")
+        and r.get("underlying_type") in ("EQUITY", "INDEX")
+    ]
 
-    futures = [r for r in rows if r.get("instrument_type") == "FUT" and r.get("underlying_type") in ("EQUITY", "INDEX")]
-    options = [r for r in rows if r.get("instrument_type") in ("CE", "PE") and r.get("underlying_type") in ("EQUITY", "INDEX")]
-    rows = futures[:15] + options[:15]
+    # Futures and options have different expiry calendars. Never filter both
+    # groups using the nearest expiry across the whole derivatives master:
+    # that picks a weekly option expiry and silently removes futures.
+    if futures_all:
+        expiries = [r["_expiry_ms"] for r in futures_all if r.get("_expiry_ms")]
+        if expiries:
+            nearest_future = min(expiries)
+            futures_all = [r for r in futures_all if r.get("_expiry_ms") == nearest_future]
+    if options_all:
+        expiries = [r["_expiry_ms"] for r in options_all if r.get("_expiry_ms")]
+        if expiries:
+            nearest_option = min(expiries)
+            options_all = [r for r in options_all if r.get("_expiry_ms") == nearest_option]
+
+    # Prefer liquid/index and the configured liquid-stock universe. Then
+    # supplement with further contracts if quote coverage is incomplete.
+    symbol_rank = {symbol: i for i, symbol in enumerate(LIQUID_SYMBOLS)}
+    futures_all.sort(key=lambda r: (
+        0 if str(r.get("underlying_type") or "").upper() == "INDEX" else 1,
+        symbol_rank.get(str(r.get("underlying_symbol") or "").upper(), 999),
+        str(r.get("trading_symbol") or ""),
+    ))
+    options_all.sort(key=lambda r: (
+        0 if str(r.get("underlying_type") or "").upper() == "INDEX" else 1,
+        symbol_rank.get(str(r.get("underlying_symbol") or "").upper(), 999),
+        str(r.get("trading_symbol") or ""),
+    ))
+    rows = futures_all[:30] + options_all[:30]
 
     quotes = _quotes([_instrument_key(r) for r in rows])
     output = []
@@ -694,12 +725,19 @@ def _unique_underlying_rows(rows, limit):
 
 def history_universe():
     """Return the configured market universe used for aggregate history averages."""
-    fno_rows = _active_rows({"NSE_FO", "BSE_FO"}, {"FUT", "CE", "PE"})
-    if fno_rows:
-        expiries = [r["_expiry_ms"] for r in fno_rows if r.get("_expiry_ms")]
-        if expiries:
-            nearest = min(expiries)
-            fno_rows = [r for r in fno_rows if r.get("_expiry_ms") == nearest]
+    # Market Analysis F&O returns are averaged over distinct underlying
+    # futures, not a pile of option strikes sharing one index. This prevents
+    # 15 NIFTY options from being reported as a 1-entity F&O average.
+    fno_rows = [
+        r for r in _active_rows({"NSE_FO", "BSE_FO"}, {"FUT"})
+        if r.get("underlying_type") in ("EQUITY", "INDEX")
+    ]
+    fno_rows.sort(key=lambda r: (
+        r.get("_expiry_ms") or 0,
+        0 if str(r.get("underlying_type") or "").upper() == "INDEX" else 1,
+        str(r.get("underlying_symbol") or "").upper(),
+    ))
+    fno_rows = _unique_underlying_rows(fno_rows, TRACKING_LIMITS["fno"])
 
     gold_rows = _unique_underlying_rows([
         x for x in _active_rows({"MCX_FO"}, {"FUT"})
