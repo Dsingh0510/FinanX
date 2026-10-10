@@ -1125,7 +1125,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         fno_data_status = "upstox"
     bond_data_status = (
         "upstox+listed-debt-etf-proxy"
-        if any(row.get("asset_type") == "bond_etf_proxy" for row in bonds)
+        if any(str(row.get("asset_type") or "").lower() == "bond_etf_proxy" or row.get("_bond_proxy") for row in bonds)
         else "upstox"
     )
     gold_metrics = _category_metrics(
