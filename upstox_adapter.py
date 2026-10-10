@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import os
 import re
@@ -530,6 +531,181 @@ def _external_market_history(symbol: str, label: str) -> dict | None:
         return None
 
 
+
+_AI_FALLBACK_TTL = 12 * 60 * 60
+_AI_FALLBACK_CACHE: dict[str, tuple[float, dict | None]] = {}
+
+
+def _ai_web_history_fallback(row: dict, category: str) -> dict | None:
+    """Last-resort AI-assisted web research, with numeric validation and provenance.
+
+    AI is used to locate cited source data, not to invent returns: this function
+    requires dated price observations and source URLs, then calculates returns
+    locally. It is disabled unless OPENAI_API_KEY is configured.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    category = str(category or "").strip().lower()
+    name = " ".join(str(row.get(k) or "") for k in (
+        "name", "short_name", "symbol", "trading_symbol", "underlying_symbol",
+        "underlying_name", "scheme_name", "bank",
+    )).strip()
+    if not name:
+        return None
+    identity = str(row.get("instrument_key") or row.get("symbol") or name)
+    cache_key = f"ai-web-history:{category}:{identity.casefold()}"
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _AI_FALLBACK_CACHE.get(cache_key)
+    if cached and now - cached[0] < _AI_FALLBACK_TTL:
+        return dict(cached[1]) if cached[1] else None
+
+    today = datetime.now(timezone.utc).date()
+    targets = {
+        "latest": today.isoformat(),
+        "one_year": (today - timedelta(days=365)).isoformat(),
+        "three_year": (today - timedelta(days=365 * 3)).isoformat(),
+        "five_year": (today - timedelta(days=365 * 5)).isoformat(),
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            "instrument_name": {"type": "string"},
+            "currency": {"type": "string"},
+            "observations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "horizon": {"type": "string", "enum": ["latest", "one_year", "three_year", "five_year"]},
+                        "date": {"type": "string"},
+                        "price": {"type": "number"},
+                        "source_name": {"type": "string"},
+                        "source_url": {"type": "string"},
+                    },
+                    "required": ["horizon", "date", "price", "source_name", "source_url"],
+                    "additionalProperties": False,
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["instrument_name", "currency", "observations", "notes"],
+        "additionalProperties": False,
+    }
+    prompt = (
+        "Research market history using web search. Do not guess or synthesize any numbers. "
+        "Find the exact same instrument (not a similar company, index, ETF, or derivative proxy). "
+        "Return observed prices and dates for these target dates (nearest available trading day): "
+        + ", ".join(f"{k}={v}" for k, v in targets.items())
+        + f". Instrument/category: {name} / {category}. "
+        "Prefer exchange, issuer, AMFI, central-bank, or established market-data sources. "
+        "Every observation must have a direct source URL that actually supports the price/date. "
+        "For an individual bond, do not substitute a bond ETF; for F&O contracts, do not substitute "
+        "underlying returns for option/futures contract returns; for MCX commodities do not substitute "
+        "USD international futures unless no same-instrument source exists (if only a proxy is found, "
+        "return no observation for that horizon). For FD, use the bank's official rate page and rate "
+        "effective date, not a fabricated price series. If reliable source data is not found for a "
+        "horizon, omit it. Do not make investment recommendations. "
+        "Use positive raw prices/NAV/index levels in the instrument's stated currency."
+    )
+    result = None
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": os.getenv("FINANX_AI_FALLBACK_MODEL", "gpt-4.1-mini"),
+                "tools": [{"type": "web_search_preview"}],
+                "input": prompt,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "finanx_market_history",
+                        "strict": True,
+                        "schema": schema,
+                    }
+                },
+            },
+            timeout=18,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        output_text = payload.get("output_text")
+        if not output_text:
+            chunks = []
+            for output in payload.get("output") or []:
+                for part in output.get("content") or []:
+                    if part.get("type") == "output_text" and part.get("text"):
+                        chunks.append(part["text"])
+            output_text = "\n".join(chunks)
+        parsed = json.loads(output_text) if output_text else {}
+        observations = parsed.get("observations") or []
+        by_horizon = {}
+        for obs in observations:
+            horizon = obs.get("horizon")
+            if horizon not in targets:
+                continue
+            try:
+                price = float(obs.get("price"))
+                obs_date = date.fromisoformat(str(obs.get("date"))[:10])
+                source_url = str(obs.get("source_url") or "")
+                source_name = str(obs.get("source_name") or "").strip()
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price <= 0 or not source_name or not source_url.startswith("https://"):
+                continue
+            # Prevent unrelated dates from being passed off as the requested horizon.
+            tolerance = {"latest": 45, "one_year": 45, "three_year": 120, "five_year": 180}[horizon]
+            target_date = date.fromisoformat(targets[horizon])
+            if abs((obs_date - target_date).days) > tolerance:
+                continue
+            by_horizon[horizon] = {
+                "price": price, "date": obs_date.isoformat(),
+                "source_name": source_name, "source_url": source_url,
+            }
+
+        latest = by_horizon.get("latest")
+        if not latest:
+            raise ValueError("AI web search did not return a validated latest price")
+        metrics = {
+            "available": False,
+            "sample_size": len(by_horizon),
+            "return_1y": None, "return_3y": None, "return_5y": None,
+            "history_source": "AI-assisted web search; source-linked price observations (last resort)",
+            "history_mode": "ai-web-search-source-linked",
+            "history_proxy": False,
+            "ai_web_fallback": True,
+            "ai_fallback_instrument_name": str(parsed.get("instrument_name") or name),
+            "ai_fallback_currency": str(parsed.get("currency") or ""),
+            "ai_fallback_observations": by_horizon,
+            "ai_fallback_notes": str(parsed.get("notes") or ""),
+        }
+        for horizon, key, years in (
+            ("one_year", "return_1y", 1),
+            ("three_year", "return_3y", 3),
+            ("five_year", "return_5y", 5),
+        ):
+            point = by_horizon.get(horizon)
+            if not point:
+                continue
+            if horizon == "one_year":
+                value = (latest["price"] / point["price"] - 1.0) * 100.0
+            else:
+                value = ((latest["price"] / point["price"]) ** (1.0 / years) - 1.0) * 100.0
+            if math.isfinite(value) and -99.99 <= value <= 1000:
+                metrics[key] = round(value, 2)
+        metrics["available"] = any(metrics.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+        if not metrics["available"]:
+            raise ValueError("AI web search returned no complete validated horizon")
+        result = metrics
+    except Exception:
+        logger.info("AI web-search market-history fallback unavailable for %s", name, exc_info=True)
+        result = None
+
+    _AI_FALLBACK_CACHE[cache_key] = (now, result)
+    return dict(result) if result else None
+
 def _external_fallback_for_row(row: dict, category: str) -> dict | None:
     """Choose only category-compatible, named public benchmark proxies."""
     category = str(category or "").lower()
@@ -790,6 +966,14 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         if metrics:
             item.update(metrics)
             return item
+
+        # Final fallback: AI searches the web for dated, source-linked prices.
+        # Returns are computed locally; missing/invalid observations stay null.
+        metrics = _ai_web_history_fallback(row, category)
+        if metrics:
+            item.update(metrics)
+            item["history_instrument_key"] = row.get("instrument_key") or row.get("symbol")
+            return item
         return item
 
     out = []
@@ -985,6 +1169,16 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None, ca
                 for key in ("return_1y", "return_3y", "return_5y")
                 if proxy_metrics.get(key) is not None
             }
+            return entity_key, item
+
+        # Ultimate fallback after broker history and compatible public sources.
+        ai_metrics = _ai_web_history_fallback(representative, str(category or ""))
+        if ai_metrics:
+            item = dict(representative)
+            item["instrument_key"] = entity_key
+            item["entity_key"] = entity_key
+            item.update(ai_metrics)
+            item["history_instrument_key"] = entity_key
             return entity_key, item
 
         return entity_key, None
