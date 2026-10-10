@@ -364,15 +364,33 @@ def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, fl
 
 
 def _mfapi_history(row: dict) -> dict | None:
-    """Fallback historical NAV from MFapi.in when Upstox has no fund history.
-    Scheme code must come from the Upstox/AMFI scheme metadata; never guess it.
-    """
+    """Resolve a fund by an explicit AMFI code or an exact scheme-name match."""
     scheme_code = row.get("scheme_code") or row.get("schemeCode")
-    # MFapi accepts numeric AMFI scheme codes, not Upstox instrument keys.
-    if not scheme_code or not str(scheme_code).strip().isdigit():
-        return None
+    name = str(row.get("name") or row.get("scheme_name") or "").strip()
+
     try:
-        response = requests.get(f"https://api.mfapi.in/mf/{quote(str(scheme_code).strip(), safe='')}", timeout=8)
+        if not scheme_code or not str(scheme_code).strip().isdigit():
+            if not name:
+                return None
+            search = requests.get(
+                "https://api.mfapi.in/mf/search",
+                params={"q": name},
+                timeout=8,
+            )
+            search.raise_for_status()
+            matches = search.json()
+            def norm(value):
+                return " ".join(str(value or "").casefold().replace("&", "and").split())
+            # Exact scheme-name match only; never select a similarly named plan.
+            exact = [m for m in matches if norm(m.get("schemeName")) == norm(name)]
+            if len(exact) != 1:
+                return None
+            scheme_code = exact[0].get("schemeCode")
+
+        if not scheme_code or not str(scheme_code).strip().isdigit():
+            return None
+        code = str(scheme_code).strip()
+        response = requests.get(f"https://api.mfapi.in/mf/{quote(code, safe='')}", timeout=8)
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data") or []
@@ -391,12 +409,12 @@ def _mfapi_history(row: dict) -> dict | None:
         metrics = _metrics(series)
         if not metrics.get("available"):
             return None
-        metrics["history_source"] = "MFapi.in historical NAV (scheme-code mapped; AMFI NAV data)"
+        metrics["history_source"] = "MFapi.in historical NAV; exact scheme-name match"
         metrics["history_mode"] = "mutual-fund-nav"
-        metrics["history_instrument_key"] = str(scheme_code)
+        metrics["history_instrument_key"] = code
         return metrics
     except Exception:
-        logger.debug("MF NAV fallback unavailable for scheme %s", scheme_code, exc_info=True)
+        logger.debug("MF NAV fallback unavailable for %s", name or scheme_code, exc_info=True)
         return None
 
 
