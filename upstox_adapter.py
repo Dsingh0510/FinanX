@@ -616,14 +616,24 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                                 k for k in ("return_1y", "return_3y", "return_5y")
                                 if item.get(k) is not None and adjusted.get(k) is not None
                             ]
-                            if any(abs(float(item[k]) - float(adjusted[k])) >= 20.0 for k in comparable):
+                            differences = {
+                                k: round(float(adjusted[k]) - float(item[k]), 2)
+                                for k in comparable
+                            }
+                            item["history_adjusted_crosscheck"] = "compared"
+                            item["adjusted_history_differences_pp"] = differences
+                            # A 10 percentage-point discrepancy is large enough
+                            # to flag a likely corporate-action/raw-close mismatch.
+                            if any(abs(delta) >= 10.0 for delta in differences.values()):
                                 for k in ("return_1y", "return_3y", "return_5y", "volatility_annualized", "max_drawdown"):
                                     if adjusted.get(k) is not None:
                                         item[k] = adjusted[k]
                                 item["history_source"] = adjusted.get("history_source")
                                 item["history_mode"] = "adjusted-close-corporate-action-cross-check"
                                 item["history_instrument_key"] = adjusted.get("history_instrument_key")
-                                item["history_adjustment_note"] = "Used adjusted same-symbol history because Upstox raw-history returns materially disagreed."
+                                item["history_adjustment_note"] = "Used adjusted same-symbol history because Upstox raw-history returns differed by at least 10 percentage points."
+                        else:
+                            item["history_adjusted_crosscheck"] = "unavailable"
                     return item
             except Exception:
                 continue
