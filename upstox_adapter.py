@@ -363,6 +363,42 @@ def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, fl
     return metrics
 
 
+def _mfapi_history(row: dict) -> dict | None:
+    """Fallback historical NAV from MFapi.in when Upstox has no fund history.
+    Scheme code must come from the Upstox/AMFI scheme metadata; never guess it.
+    """
+    scheme_code = row.get("scheme_code") or row.get("schemeCode")
+    if not scheme_code:
+        return None
+    try:
+        response = requests.get(f"https://api.mfapi.in/mf/{quote(str(scheme_code), safe='')}", timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") or []
+        series = []
+        for point in data:
+            try:
+                dt = datetime.strptime(str(point.get("date")), "%d-%m-%Y").replace(tzinfo=timezone.utc)
+                nav = float(point.get("nav"))
+            except (TypeError, ValueError):
+                continue
+            if nav > 0:
+                series.append((dt, nav))
+        series.sort(key=lambda item: item[0])
+        if len(series) < 2:
+            return None
+        metrics = _metrics(series)
+        if not metrics.get("available"):
+            return None
+        metrics["history_source"] = "MFapi.in historical NAV (scheme-code mapped; AMFI NAV data)"
+        metrics["history_mode"] = "mutual-fund-nav"
+        metrics["history_instrument_key"] = str(scheme_code)
+        return metrics
+    except Exception:
+        logger.debug("MF NAV fallback unavailable for scheme %s", scheme_code, exc_info=True)
+        return None
+
+
 def _history_for_rows(rows: list[dict], category: str, limit: int | None = None, mf_cache: dict | None = None) -> list[dict]:
     """Enrich tracked entities with Upstox history, using stable underlyings when available."""
     if not rows:
@@ -430,6 +466,14 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                     return item
             except Exception:
                 continue
+
+        # Mutual-fund fallback is isolated: only invoked when Upstox historical
+        # candles cannot supply usable NAV returns for this scheme.
+        if str(category).lower() in {"mutual-funds", "mutual_funds", "funds"}:
+            metrics = _mfapi_history(row)
+            if metrics:
+                item.update(metrics)
+                return item
         return item
 
     out = []
