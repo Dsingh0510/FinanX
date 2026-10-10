@@ -1123,7 +1123,11 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         fno_data_status = "upstox-underlying-history"
     else:
         fno_data_status = "upstox"
-    bond_data_status = "upstox"
+    bond_data_status = (
+        "upstox+listed-debt-etf-proxy"
+        if any(row.get("asset_type") == "bond_etf_proxy" for row in bonds)
+        else "upstox"
+    )
     gold_metrics = _category_metrics(
         list(gold_history.values()),
         16.0,
@@ -1169,7 +1173,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         },
         "bonds": {
             "status": bond_data_status,
-            "source": "Upstox listed bond/debt quotes",
+            "source": "Upstox listed debt quotes; listed Indian G-Sec/debt ETF prices used as clearly labelled proxies when individual bonds are absent",
             "metrics": bond_metrics,
             "analyzed_options": bonds,
             "updated_at": now,
@@ -1207,6 +1211,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "source": "Upstox F&O quotes; historical returns are underlying/futures benchmarks, not option-premium returns",
             "metrics": {
                 **fno_metrics,
+                "return_basis": "underlying/futures benchmark history; not option-premium performance",
                 "live_sample_size": len(fno),
                 "active_contracts": len(fno),
             },
