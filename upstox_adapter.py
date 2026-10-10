@@ -536,6 +536,22 @@ def _external_fallback_for_row(row: dict, category: str) -> dict | None:
     name = " ".join(str(row.get(k) or "") for k in ("name", "symbol", "underlying_symbol", "trading_symbol")).upper()
     if category in {"gold"}:
         return _external_market_history("GOLDBEES.NS", "Indian gold ETF proxy in INR")
+    if category in {"bonds", "bond"}:
+        # Only use a gilt ETF proxy when the row itself is explicitly marked as
+        # a debt ETF/G-Sec proxy. Never label ETF price performance as an
+        # individual bond's return.
+        if row.get("_bond_proxy") or str(row.get("asset_type") or "").lower() == "bond_etf_proxy":
+            return _external_market_history("GILTBEES.NS", "Indian gilt ETF proxy (not an individual bond)")
+    if category in {"fno", "futures", "derivatives"}:
+        underlying = str(row.get("underlying_symbol") or row.get("underlying_name") or row.get("name") or "").upper()
+        normalized_underlying = re.sub(r"[^A-Z0-9]", "", underlying)
+        if "BANKNIFTY" in normalized_underlying or "NIFTYBANK" in normalized_underlying:
+            return _external_market_history("^NSEBANK", "Bank Nifty index proxy for underlying history")
+        if "NIFTY" in normalized_underlying and "500" not in normalized_underlying:
+            return _external_market_history("^NSEI", "Nifty 50 index proxy for underlying history")
+        equity_symbol = str(row.get("underlying_symbol") or "").strip().upper()
+        if equity_symbol and re.fullmatch(r"[A-Z0-9&._-]+", equity_symbol):
+            return _external_market_history(f"{equity_symbol}.NS", f"Public underlying equity history for {equity_symbol}")
     if category in {"currency"}:
         pair = next((p for p in ("USDINR", "EURINR", "GBPINR", "JPYINR") if p in name.replace("/", "").replace("-", "")), None)
         yahoo_pair = {"USDINR": "USDINR=X", "EURINR": "EURINR=X", "GBPINR": "GBPINR=X", "JPYINR": "JPYINR=X"}
@@ -757,9 +773,19 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                 item.update(metrics)
                 return item
 
-        # Last-resort public benchmark series for supported gold, commodity
-        # and currency rows. The proxy is marked and never presented as the
-        # exact MCX contract or an unsupported currency pair.
+        # If stock history is missing entirely, use same-symbol public adjusted
+        # history as a labelled fallback. Upstox remains the preferred source.
+        if str(category).lower() in {"stocks", "stock"}:
+            metrics = _external_stock_history(row)
+            if metrics:
+                item.update(metrics)
+                item["history_proxy"] = True
+                item["history_mode"] = "public-adjusted-stock-history-fallback"
+                item["history_adjustment_note"] = "Public adjusted history used because Upstox history was unavailable."
+                return item
+
+        # Last-resort category-compatible public series. Any ETF, index, or
+        # international commodity proxy is explicitly labelled in its source.
         metrics = _external_fallback_for_row(row, category)
         if metrics:
             item.update(metrics)
