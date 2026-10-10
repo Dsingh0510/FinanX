@@ -333,6 +333,116 @@ def _metrics(rows: list[tuple[datetime, float]]) -> dict:
     return out
 
 
+
+_INDEX_METRICS_CACHE = None
+_INDEX_METRICS_AT = 0.0
+_INDEX_METRICS_TTL = 6 * 60 * 60
+
+
+def _nifty500_index_metrics() -> dict:
+    """Load Nifty 500 index history, with labelled provider/index fallbacks."""
+    global _INDEX_METRICS_CACHE, _INDEX_METRICS_AT
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if _INDEX_METRICS_CACHE and now_ts - _INDEX_METRICS_AT < _INDEX_METRICS_TTL:
+        return dict(_INDEX_METRICS_CACHE)
+
+    # Prefer an exact index instrument key discovered from Upstox's instrument
+    # master. Do not accidentally use a stock or ETF as the index itself.
+    candidates = []
+    try:
+        from market_universe import instruments, _instrument_key
+        rows = instruments()
+        if isinstance(rows, dict):
+            rows = rows.get("data") or rows.get("instruments") or []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            label = " ".join(str(row.get(k) or "") for k in (
+                "name", "trading_symbol", "short_name", "instrument_type",
+                "segment", "exchange",
+            )).upper()
+            key = str(_instrument_key(row) or "")
+            if "NIFTY 500" in label and key and (
+                "INDEX" in str(row.get("segment") or "").upper()
+                or "INDEX" in key.upper()
+            ):
+                candidates.append(key)
+    except Exception:
+        logger.exception("Unable to discover Nifty 500 in Upstox instrument master")
+
+    for key in dict.fromkeys(candidates):
+        try:
+            series = _series(key, unit="months")
+            metrics = _metrics(series)
+            if metrics.get("return_1y") is not None:
+                metrics.update({
+                    "index_name": "Nifty 500",
+                    "benchmark_source": "Upstox historical index candles",
+                    "benchmark_symbol": key,
+                    "benchmark_fallback": False,
+                })
+                _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = metrics, now_ts
+                return dict(metrics)
+        except Exception:
+            logger.exception("Upstox Nifty 500 history failed for %s", key)
+
+    # Public-history fallback: Nifty 500 first, then Nifty 50 only if the
+    # Nifty 500 series is unavailable. Keep the displayed benchmark name honest.
+    end_ts = int(datetime.now(timezone.utc).timestamp())
+    start_ts = end_ts - (365 * 5 + 220) * 24 * 60 * 60
+    for ticker, label in (("^CRSLDX", "Nifty 500"), ("^NSEI", "Nifty 50")):
+        try:
+            response = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}",
+                params={"period1": start_ts, "period2": end_ts, "interval": "1mo", "events": "history"},
+                headers={"User-Agent": "Mozilla/5.0 FinanX/1.0"},
+                timeout=_HISTORY_TIMEOUT,
+            )
+            response.raise_for_status()
+            chart = (response.json().get("chart") or {})
+            result_rows = chart.get("result") or []
+            if not result_rows:
+                continue
+            item = result_rows[0]
+            timestamps = item.get("timestamp") or []
+            quote_rows = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+            closes = quote_rows.get("close") or []
+            series = []
+            for stamp, close in zip(timestamps, closes):
+                if close is None:
+                    continue
+                try:
+                    price = float(close)
+                    dt = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+                except (TypeError, ValueError, OSError):
+                    continue
+                if price > 0:
+                    series.append((dt, price))
+            series.sort(key=lambda x: x[0])
+            metrics = _metrics(series)
+            if metrics.get("return_1y") is None:
+                continue
+            metrics.update({
+                "index_name": label,
+                "benchmark_source": "Yahoo Finance historical index series (public fallback)",
+                "benchmark_symbol": ticker,
+                "benchmark_fallback": True,
+            })
+            _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = metrics, now_ts
+            return dict(metrics)
+        except Exception:
+            logger.exception("Public index history failed for %s", ticker)
+
+    return {
+        "available": False,
+        "return_1y": None,
+        "return_3y": None,
+        "return_5y": None,
+        "index_name": "Nifty 500",
+        "benchmark_source": "unavailable",
+        "benchmark_fallback": True,
+    }
+
 def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, float]]) -> dict:
     """Fill missing long horizons from the longest real derivative history.
     
@@ -1184,11 +1294,38 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     dec = sum(1 for x in live_changes if x < 0)
     breadth = round(50 + ((adv - dec) / len(live_changes)) * 50, 1) if live_changes else None
 
-    stock_metrics = _category_metrics(
-        history_results.get("stocks", []),
+    tracked_stock_metrics = _category_metrics(
+        stocks,
         20.0,
         tracked_count=len(hu.get("stocks", [])),
     )
+    # Market Analysis presents the broad market benchmark as the main stock
+    # return, while preserving the tracked-stock average as a separate metric.
+    # If the index provider fails, use the tracked-stock average but label it
+    # clearly instead of displaying a blank or misrepresenting it as Nifty 500.
+    benchmark_metrics = _nifty500_index_metrics()
+    if benchmark_metrics.get("return_1y") is not None:
+        stock_metrics = dict(tracked_stock_metrics)
+        stock_metrics.update({
+            "return_1y": benchmark_metrics.get("return_1y"),
+            "return_3y": benchmark_metrics.get("return_3y"),
+            "return_5y": benchmark_metrics.get("return_5y"),
+            "average_basis": f"{benchmark_metrics.get('index_name', 'Nifty 500')} index performance",
+            "benchmark_name": benchmark_metrics.get("index_name", "Nifty 500"),
+            "benchmark_source": benchmark_metrics.get("benchmark_source"),
+            "benchmark_symbol": benchmark_metrics.get("benchmark_symbol"),
+            "benchmark_fallback": benchmark_metrics.get("benchmark_fallback", False),
+            "tracked_stock_metrics": tracked_stock_metrics,
+        })
+    else:
+        stock_metrics = dict(tracked_stock_metrics)
+        stock_metrics.update({
+            "average_basis": "Fallback: average of tracked stocks (index history unavailable)",
+            "benchmark_name": "Tracked stocks average",
+            "benchmark_source": "Upstox historical stock candles",
+            "benchmark_fallback": True,
+            "tracked_stock_metrics": tracked_stock_metrics,
+        })
     stock_metrics.update({
         "live_sample_size": len(snapshot.get("stocks", [])),
         "advancers": adv,
