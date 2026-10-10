@@ -1039,6 +1039,51 @@ def _upstox_currency_converter_quote(label):
         return None, None, None
 
 
+def _external_currency_spot_quote(label):
+    """Public FX spot fallback used only when all Upstox quote paths fail."""
+    symbols = {
+        "USD/INR": "USDINR=X",
+        "EUR/INR": "EURINR=X",
+        "GBP/INR": "GBPINR=X",
+        "JPY/INR": "JPYINR=X",
+        "AUD/INR": "AUDINR=X",
+        "CNY/INR": "CNYINR=X",
+    }
+    symbol = symbols.get(str(label or "").upper())
+    if not symbol:
+        return None, None, None
+    try:
+        response = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            params={"range": "5d", "interval": "1d"},
+            headers={"User-Agent": "Mozilla/5.0 FinanX-market-analysis/1.0"},
+            timeout=6,
+        )
+        response.raise_for_status()
+        results = (response.json().get("chart") or {}).get("result") or []
+        if not results:
+            return None, None, None
+        result = results[0]
+        stamps = result.get("timestamp") or []
+        closes = (((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+        points = []
+        for stamp, close in zip(stamps, closes):
+            try:
+                value = float(close)
+                if value > 0:
+                    points.append((int(stamp), value))
+            except (TypeError, ValueError):
+                continue
+        if not points:
+            return None, None, None
+        stamp, value = points[-1]
+        change = ((value / points[-2][1]) - 1) * 100 if len(points) > 1 and points[-2][1] > 0 else None
+        updated = datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
+        return value, change, updated
+    except Exception:
+        return None, None, None
+
+
 def market_now():
     """Build the homepage Market Now board from current Upstox V3 quotes only."""
     targets=[]; seen=set()
@@ -1067,13 +1112,24 @@ def market_now():
     all_futures=[x for x in instruments() if str(x.get("instrument_type","")).upper()=="FUT"]
 
     for label,terms,unit in [
-        ("Gold",("GOLD",),"per contract"),("Silver",("SILVER",),"per contract"),
+        ("Gold",("GOLD",),"₹ per 10g"),("Silver",("SILVER",),"per contract"),
         ("Crude Oil",("CRUDEOIL","CRUDE OIL","CRUDE"),"per contract"),
         ("Copper",("COPPER",),"per contract"),("Natural Gas",("NATURALGAS","NATURAL GAS","NATGAS"),"per contract"),
         ("Zinc",("ZINC",),"per contract"),("Aluminium",("ALUMINIUM","ALUMINI"),"per contract"),
     ]:
         rows=[x for x in all_futures if str(x.get("segment","")).upper()=="MCX_FO"
               and any(term in (str(x.get("underlying_symbol","")).upper()+" "+str(x.get("name","")).upper()+" "+str(x.get("trading_symbol","")).upper()) for term in terms)]
+        # Gold futures come in different contract sizes (petal, guinea, mini,
+        # ten-gram, etc.). The homepage Gold card should use the standard GOLD
+        # futures quote, whose MCX quote is expressed per 10 grams.
+        if label == "Gold":
+            standard = [
+                x for x in rows
+                if str(x.get("underlying_symbol") or "").upper() == "GOLD"
+                or str(x.get("trading_symbol") or "").upper().startswith("GOLD FUT")
+            ]
+            if standard:
+                rows = standard
         item=_find_nearest_future(rows,lambda x:True)
         if item:
             add(label,_instrument_key(item),"commodity",unit)
@@ -1226,16 +1282,20 @@ def market_now():
         ltp,change=_quote_value(q)
         if ltp is None and kind == "currency":
             converter_value, converter_change, converter_at = _upstox_currency_converter_quote(label)
+            converter_source = "Upstox currency converter"
+            if converter_value is None:
+                converter_value, converter_change, converter_at = _external_currency_spot_quote(label)
+                converter_source = "Yahoo Finance FX spot fallback"
             if converter_value is not None:
                 output.append({
                     "label": label,
                     "value": round(float(converter_value), 4),
-                    "today_change": converter_change,
+                    "today_change": round(float(converter_change), 2) if converter_change is not None else None,
                     "kind": kind,
                     "unit": unit,
                     "freshness": "latest",
                     "instrument_key": key,
-                    "source": "Upstox currency converter",
+                    "source": converter_source,
                     "date": converter_at,
                 })
                 continue
