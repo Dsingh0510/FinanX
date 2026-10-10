@@ -1306,15 +1306,27 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     benchmark_metrics = _nifty500_index_metrics()
     if benchmark_metrics.get("return_1y") is not None:
         stock_metrics = dict(tracked_stock_metrics)
+        horizon_sources = {}
+        for horizon in ("return_1y", "return_3y", "return_5y"):
+            index_value = benchmark_metrics.get(horizon)
+            if index_value is not None:
+                stock_metrics[horizon] = index_value
+                horizon_sources[horizon] = (
+                    f"{benchmark_metrics.get('index_name', 'Nifty 500')} index "
+                    f"({benchmark_metrics.get('benchmark_source', 'historical index data')})"
+                )
+            else:
+                # Keep each displayed horizon numeric where the tracked-stock
+                # history has a valid value, while exposing its different basis.
+                stock_metrics[horizon] = tracked_stock_metrics.get(horizon)
+                horizon_sources[horizon] = "Average of tracked stocks (index horizon unavailable)"
         stock_metrics.update({
-            "return_1y": benchmark_metrics.get("return_1y"),
-            "return_3y": benchmark_metrics.get("return_3y"),
-            "return_5y": benchmark_metrics.get("return_5y"),
-            "average_basis": f"{benchmark_metrics.get('index_name', 'Nifty 500')} index performance",
+            "average_basis": f"{benchmark_metrics.get('index_name', 'Nifty 500')} index performance; per-horizon fallback labelled",
             "benchmark_name": benchmark_metrics.get("index_name", "Nifty 500"),
             "benchmark_source": benchmark_metrics.get("benchmark_source"),
             "benchmark_symbol": benchmark_metrics.get("benchmark_symbol"),
             "benchmark_fallback": benchmark_metrics.get("benchmark_fallback", False),
+            "return_horizon_sources": horizon_sources,
             "tracked_stock_metrics": tracked_stock_metrics,
         })
     else:
