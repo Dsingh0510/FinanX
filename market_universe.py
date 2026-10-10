@@ -984,25 +984,89 @@ def compare_mutual_funds(limit=None):
 
 
 def compare_fds():
-    # Upstox does not expose bank-deposit rate tables. Keep this reference
-    # registry separate from market quotes and explicitly mark source quality.
+    """Manually maintained retail FD reference rates for six major banks.
+
+    Update these values when each bank revises its published retail rates.
+    Rates are annual percentages for deposits below Rs. 3 crore; tenor buckets
+    differ slightly by bank, so the source tenor and effective date are shown.
+    """
     rows = [
-        {"bank": "SBI", "tenor": "1 year to <2 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-06-16", "source": "Official SBI retail term-deposit table"},
-        {"bank": "HDFC Bank", "tenor": "1 year to <15 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-08-19", "source": "Official HDFC Bank FD rate page"},
-        {"bank": "PNB", "tenor": "1 year", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-06-18", "source": "Official PNB domestic term-deposit table"},
-        {"bank": "Canara Bank", "tenor": "1 year & above to 1 year 3 months", "rate": 6.25, "senior_rate": 6.75, "effective": "2025-08-07", "source": "Official Canara Bank deposit-rate page"},
-        {"bank": "Axis Bank", "tenor": "1 year–1 year 10 days", "rate": 6.40, "senior_rate": 6.90, "effective": "2025-09-26", "source": "Official Axis Bank FD table; verify before booking"},
-        {"bank": "ICICI Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live ICICI rate"},
-        {"bank": "Bank of India", "tenor": "1 year to <3 years", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live BOI rate"},
-        {"bank": "Bank of Baroda", "tenor": "1 year", "rate": 6.25, "senior_rate": 7.25, "effective": "2026-09", "source": "Official-rate fallback; verify live BOB rate"},
-        {"bank": "Indian Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Indian Bank rate"},
-        {"bank": "Kotak Mahindra Bank", "tenor": "Around 1 year", "rate": 6.25, "senior_rate": 6.75, "effective": "2026-09", "source": "Official-rate fallback; verify live Kotak rate"},
+        {
+            "bank": "SBI",
+            "tenor_1y": "1 year to less than 2 years",
+            "tenor_3y": "3 years to less than 5 years",
+            "tenor_5y": "5 years to 10 years",
+            "rate_1y": 6.25, "rate_3y": 6.30, "rate_5y": 6.05,
+            "senior_rate_1y": 6.75, "senior_rate_3y": 6.80, "senior_rate_5y": 7.05,
+            "effective": "2025-12-15",
+            "source": "Official SBI retail domestic term-deposit rates",
+            "source_url": "https://sbi.bank.in/web/interest-rates/deposit-rates/retail-domestic-term-deposits",
+        },
+        {
+            "bank": "HDFC Bank",
+            "tenor_1y": "1 year to less than 15 months",
+            "tenor_3y": "3 years 1 day to less than 4 years 7 months",
+            "tenor_5y": "4 years 7 months to 10 years",
+            "rate_1y": 6.25, "rate_3y": 6.50, "rate_5y": 6.40,
+            "senior_rate_1y": 6.75, "senior_rate_3y": 7.10, "senior_rate_5y": 6.90,
+            "effective": "2026-08-19",
+            "source": "Official HDFC Bank FD interest rates",
+            "source_url": "https://www.hdfc.bank.in/fixed-deposit/fd-interest-rate",
+        },
+        {
+            "bank": "ICICI Bank",
+            "tenor_1y": "1 year to 389 days",
+            "tenor_3y": "3 years 1 day to 5 years",
+            "tenor_5y": "5 years 1 day to 10 years",
+            "rate_1y": 6.25, "rate_3y": 6.50, "rate_5y": 6.50,
+            "senior_rate_1y": 6.75, "senior_rate_3y": 7.10, "senior_rate_5y": 7.00,
+            "effective": "2026-10-05",
+            "source": "Official ICICI Bank FD interest rates",
+            "source_url": "https://www.icici.bank.in/personal-banking/deposits/fixed-deposit/fd-interest-rates",
+        },
+        {
+            "bank": "Axis Bank",
+            "tenor_1y": "1 year to 1 year 10 days",
+            "tenor_3y": "18 months to 10 years (rate bucket)",
+            "tenor_5y": "18 months to 10 years (rate bucket)",
+            "rate_1y": 6.25, "rate_3y": 6.50, "rate_5y": 6.50,
+            "senior_rate_1y": 6.75, "senior_rate_3y": 7.00, "senior_rate_5y": 7.00,
+            "effective": "2026-09-30",
+            "source": "Official Axis Bank FD interest rates",
+            "source_url": "https://www.axis.bank.in/deposits/fixed-deposits/fd-interest-rates",
+        },
+        {
+            "bank": "Kotak Mahindra Bank",
+            "tenor_1y": "365 days to less than 15 months",
+            "tenor_3y": "3 years and above but less than 4 years",
+            "tenor_5y": "5 years to 10 years",
+            "rate_1y": 6.35, "rate_3y": 6.40, "rate_5y": 6.25,
+            "senior_rate_1y": 6.85, "senior_rate_3y": 6.90, "senior_rate_5y": 6.75,
+            "effective": "2026-06-10",
+            "source": "Official Kotak Mahindra Bank FD interest rates",
+            "source_url": "https://www.kotak.bank.in/en/personal-banking/deposits/fixed-deposit/fixed-deposit-interest-rate.html",
+        },
+        {
+            "bank": "Punjab National Bank",
+            "tenor_1y": "1 year",
+            "tenor_3y": "more than 3 years to 1203 days",
+            "tenor_5y": "1205 days to 5 years",
+            "rate_1y": 6.40, "rate_3y": 6.50, "rate_5y": 6.50,
+            "senior_rate_1y": 6.90, "senior_rate_3y": 7.00, "senior_rate_5y": 7.00,
+            "effective": "2025-06-18",
+            "source": "Official PNB domestic term-deposit rates",
+            "source_url": "https://www.pnbindia.in/Interest-Rates-Deposit.html",
+        },
     ]
 
     for row in rows:
-        effective = str(row.get("effective") or "")
-        row["source_status"] = "dated_reference" if len(effective) == 10 and effective.count("-") == 2 else "month_reference"
-        row["live_verification_required"] = row["source_status"] != "dated_reference"
+        # Backwards-compatible fields for UI components that expect a single
+        # rate/tenor: use the one-year general-citizen rate.
+        row["rate"] = row["rate_1y"]
+        row["tenor"] = row["tenor_1y"]
+        row["senior_rate"] = row["senior_rate_1y"]
+        row["source_status"] = "manual_official_reference"
+        row["live_verification_required"] = True
     return rows
 
 
