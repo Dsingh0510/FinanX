@@ -965,14 +965,33 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
         metrics = _external_fallback_for_row(row, category)
         if metrics:
             item.update(metrics)
-            return item
 
-        # Final fallback: AI searches the web for dated, source-linked prices.
-        # Returns are computed locally; missing/invalid observations stay null.
-        metrics = _ai_web_history_fallback(row, category)
+        # AI can fill only horizons still missing after the normal public
+        # fallback. It never overwrites a real Upstox/public-source horizon.
+        missing_horizons = [k for k in ("return_1y", "return_3y", "return_5y") if item.get(k) is None]
+        if missing_horizons:
+            ai_metrics = _ai_web_history_fallback(row, category)
+            if ai_metrics:
+                for key in missing_horizons:
+                    if ai_metrics.get(key) is not None:
+                        item[key] = ai_metrics[key]
+                item["ai_web_fallback"] = True
+                item["ai_fallback_observations"] = ai_metrics.get("ai_fallback_observations", {})
+                item["ai_fallback_currency"] = ai_metrics.get("ai_fallback_currency")
+                item["ai_fallback_notes"] = ai_metrics.get("ai_fallback_notes")
+                item["history_source"] = (
+                    str(item.get("history_source") or "Primary history unavailable")
+                    + "; missing horizons filled by AI-assisted web search with source-linked prices"
+                )
+                item["history_horizon_sources"] = dict(item.get("history_horizon_sources") or {})
+                for key in missing_horizons:
+                    if ai_metrics.get(key) is not None:
+                        item["history_horizon_sources"][key] = "AI-assisted web search; source-linked price observations"
+                item["available"] = any(item.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+                if not item.get("history_instrument_key"):
+                    item["history_instrument_key"] = row.get("instrument_key") or row.get("symbol")
+                return item
         if metrics:
-            item.update(metrics)
-            item["history_instrument_key"] = row.get("instrument_key") or row.get("symbol")
             return item
         return item
 
@@ -1169,6 +1188,20 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None, ca
                 for key in ("return_1y", "return_3y", "return_5y")
                 if proxy_metrics.get(key) is not None
             }
+            missing_horizons = [k for k in ("return_1y", "return_3y", "return_5y") if item.get(k) is None]
+            if missing_horizons:
+                ai_metrics = _ai_web_history_fallback(representative, str(category or ""))
+                if ai_metrics:
+                    for key in missing_horizons:
+                        if ai_metrics.get(key) is not None:
+                            item[key] = ai_metrics[key]
+                            item["history_horizon_sources"][key] = "AI-assisted web search; source-linked price observations"
+                    item["ai_web_fallback"] = True
+                    item["ai_fallback_observations"] = ai_metrics.get("ai_fallback_observations", {})
+                    item["ai_fallback_currency"] = ai_metrics.get("ai_fallback_currency")
+                    item["ai_fallback_notes"] = ai_metrics.get("ai_fallback_notes")
+                    item["history_source"] = str(item.get("history_source") or "Public fallback") + "; missing horizons filled by AI-assisted web search"
+                    item["available"] = any(item.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
             return entity_key, item
 
         # Ultimate fallback after broker history and compatible public sources.
