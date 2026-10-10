@@ -461,13 +461,40 @@ def _mfapi_history(row: dict) -> dict | None:
             )
             search.raise_for_status()
             matches = search.json()
+            import re
             def norm(value):
-                return " ".join(str(value or "").casefold().replace("&", "and").split())
-            # Exact scheme-name match only; never select a similarly named plan.
-            exact = [m for m in matches if norm(m.get("schemeName")) == norm(name)]
-            if len(exact) != 1:
-                return None
-            scheme_code = exact[0].get("schemeCode")
+                text = str(value or "").casefold().replace("&", "and")
+                text = re.sub(r"[^a-z0-9]+", " ", text)
+                # Upstox and AMFI sometimes format plan/option labels differently.
+                text = re.sub(r"\\b(direct|regular|growth|idcw|dividend|plan|option)\\b", " ", text)
+                return " ".join(text.split())
+            normalized_name = norm(name)
+            exact = [m for m in matches if norm(m.get("schemeName")) == normalized_name]
+            if len(exact) == 1:
+                scheme_code = exact[0].get("schemeCode")
+            else:
+                # Only accept a very close token match and require the plan/option
+                # labels to agree where Upstox provides them; never guess among
+                # similarly named funds.
+                target_tokens = set(normalized_name.split())
+                scored = []
+                for candidate in matches:
+                    candidate_name = norm(candidate.get("schemeName"))
+                    tokens = set(candidate_name.split())
+                    if not target_tokens or not tokens:
+                        continue
+                    score = len(target_tokens & tokens) / len(target_tokens | tokens)
+                    original = str(candidate.get("schemeName") or "").casefold()
+                    row_text = " ".join(str(row.get(k) or "") for k in ("name", "scheme_name", "plan", "dividend_type")).casefold()
+                    plan_ok = not any(tag in row_text for tag in ("direct", "regular", "growth", "idcw", "dividend")) or any(
+                        tag in row_text and tag in original for tag in ("direct", "regular", "growth", "idcw", "dividend")
+                    )
+                    if score >= 0.82 and plan_ok:
+                        scored.append((score, candidate))
+                scored.sort(key=lambda pair: pair[0], reverse=True)
+                if not scored or (len(scored) > 1 and scored[0][0] == scored[1][0]):
+                    return None
+                scheme_code = scored[0][1].get("schemeCode")
 
         if not scheme_code or not str(scheme_code).strip().isdigit():
             return None
@@ -981,10 +1008,23 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         item = dict(row)
         hist = fno_underlyings.get(str(row.get("underlying_key")))
         if hist:
+            is_option = str(row.get("instrument_type") or row.get("type") or "").upper() in {"CE", "PE"}
             for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized", "max_drawdown"):
                 if hist.get(key) is not None:
-                    item[key] = hist.get(key)
-            item["history_source"] = "Underlying market history (Upstox)"
+                    if is_option and key.startswith("return_"):
+                        item["underlying_" + key] = hist.get(key)
+                    else:
+                        item[key] = hist.get(key)
+            if is_option:
+                # An underlying index/future's performance is not the option's
+                # premium return. Do not expose it under the option's return fields.
+                for key in ("return_1y", "return_3y", "return_5y"):
+                    item.pop(key, None)
+                item["history_source"] = "Underlying benchmark history (Upstox); not option-premium return"
+                item["return_basis"] = "underlying benchmark; option premium returns unavailable"
+            else:
+                item["history_source"] = "Underlying/futures market history (Upstox)"
+                item["return_basis"] = "underlying/futures benchmark"
             item["underlying_history_available"] = True
         enriched_fno.append(item)
     fno = enriched_fno
@@ -1164,7 +1204,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         },
         "fno": {
             "status": fno_data_status,
-            "source": "Upstox F&O market quotes + historical futures/options candles",
+            "source": "Upstox F&O quotes; historical returns are underlying/futures benchmarks, not option-premium returns",
             "metrics": {
                 **fno_metrics,
                 "live_sample_size": len(fno),
