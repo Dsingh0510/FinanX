@@ -997,7 +997,7 @@ def compare_fds():
             "tenor_3y": "3 years to less than 5 years",
             "tenor_5y": "5 years to 10 years",
             "rate_1y": 6.25, "rate_3y": 6.30, "rate_5y": 6.05,
-            "senior_rate_1y": 6.75, "senior_rate_3y": 6.80, "senior_rate_5y": 7.05,
+            "senior_rate_1y": 6.75, "senior_rate_3y": 6.80, "senior_rate_5y": 6.55,
             "effective": "2025-12-15",
             "source": "Official SBI retail domestic term-deposit rates",
             "source_url": "https://sbi.bank.in/web/interest-rates/deposit-rates/retail-domestic-term-deposits",
