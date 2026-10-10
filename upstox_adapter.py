@@ -934,15 +934,15 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         "currency": (hu.get("currency", []), "entities", TRACKING_LIMITS["currency"]),
     }
 
-    def load_history(rows, category, limit):
+    def load_history(rows, category, limit, segment_key):
         if category == "entities":
-            return _history_for_segment_entities(rows, limit)
+            return _history_for_segment_entities(rows, limit, segment_key)
         return _history_for_rows(rows, category, limit)
 
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
-            pool.submit(load_history, rows, category, limit, key)
+            pool.submit(load_history, rows, category, limit, key): key
             for key, (rows, category, limit) in history_jobs.items()
         }
         fno_future = pool.submit(
