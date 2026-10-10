@@ -436,8 +436,8 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                         if metrics.get(metric_key) is None and underlying_metrics.get(metric_key) is not None:
                             metrics[metric_key] = underlying_metrics[metric_key]
 
-                    if str(category).lower() in {"entities", "gold", "commodities", "currency"}:
-                        metrics = _fill_derivative_horizon_gaps(metrics, series)
+                    # Keep unavailable horizons null; do not label a short
+                    # contract's annualized return as a true 1Y/3Y/5Y return.
 
                 if metrics.get("available"):
                     item.update(metrics)
@@ -577,8 +577,8 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
                         except Exception:
                             currency_indicator_metrics = {}
 
-                    if str(representative.get("underlying_type") or "").upper() in {"COM", "CUR"}:
-                        metrics = _fill_derivative_horizon_gaps(metrics, series)
+                    # Missing horizons stay null unless backed by real
+                    # underlying/global-indicator history above.
 
                 if metrics.get("available"):
                     item = dict(representative)
@@ -855,7 +855,11 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         14.0,
         tracked_count=len(hu.get("mutual-funds", [])),
     )
-    fund_data_status = "upstox"
+    fund_data_status = (
+        "upstox+historical-nav-fallback"
+        if any("MFapi.in" in str(row.get("history_source") or "") for row in history_results.get("mutual-funds", []))
+        else "upstox"
+    )
 
     bond_metrics = _category_metrics(
         history_results.get("bonds", []),
@@ -929,8 +933,8 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
             "updated_at": now,
         },
         "mutual-funds": {
-            "status": "upstox",
-            "source": "Upstox mutual-fund instrument master + historical candles",
+            "status": fund_data_status,
+            "source": "Upstox scheme metadata/history; MFapi.in NAV history fallback when needed",
             "metrics": fund_metrics,
             "analyzed_options": funds,
             "updated_at": now,
