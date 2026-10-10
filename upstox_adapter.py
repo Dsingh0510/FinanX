@@ -363,6 +363,88 @@ def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, fl
     return metrics
 
 
+def _external_market_history(symbol: str, label: str) -> dict | None:
+    """Fetch a public historical price series as a last-resort, labelled proxy.
+    This is only used when the primary broker/history sources have no usable
+    history. Proxy returns are explicitly tagged so the UI can disclose them.
+    """
+    try:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=365 * 6 + 10)
+        response = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='=.^-')}",
+            params={
+                "period1": int(start.timestamp()),
+                "period2": int(end.timestamp()),
+                "interval": "1mo",
+                "events": "div,splits",
+            },
+            headers={"User-Agent": "Mozilla/5.0 FinanX-market-analysis/1.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        result = (response.json().get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        item = result[0]
+        stamps = item.get("timestamp") or []
+        indicators = item.get("indicators") or {}
+        quotes_data = indicators.get("quote") or [{}]
+        closes = (quotes_data[0] or {}).get("close") or []
+        adj = (indicators.get("adjclose") or [{}])[0].get("adjclose") or []
+        series = []
+        for index, stamp in enumerate(stamps):
+            raw = adj[index] if index < len(adj) and adj[index] is not None else (
+                closes[index] if index < len(closes) else None
+            )
+            try:
+                value = float(raw)
+                dt = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if value > 0:
+                series.append((dt, value))
+        if len(series) < 2:
+            return None
+        metrics = _metrics(series)
+        if not metrics.get("available"):
+            return None
+        metrics["history_source"] = f"Yahoo Finance historical series ({label})"
+        metrics["history_mode"] = "external-benchmark-proxy"
+        metrics["history_instrument_key"] = symbol
+        metrics["history_proxy"] = True
+        return metrics
+    except Exception:
+        logger.debug("External historical fallback unavailable for %s", symbol, exc_info=True)
+        return None
+
+
+def _external_fallback_for_row(row: dict, category: str) -> dict | None:
+    """Choose only category-compatible, named public benchmark proxies."""
+    category = str(category or "").lower()
+    name = " ".join(str(row.get(k) or "") for k in ("name", "symbol", "underlying_symbol", "trading_symbol")).upper()
+    if category in {"gold"}:
+        return _external_market_history("GOLDBEES.NS", "Indian gold ETF proxy in INR")
+    if category in {"currency"}:
+        pair = next((p for p in ("USDINR", "EURINR", "GBPINR", "JPYINR") if p in name.replace("/", "").replace("-", "")), None)
+        yahoo_pair = {"USDINR": "INR=X", "EURINR": "EURINR=X", "GBPINR": "GBPINR=X", "JPYINR": "JPYINR=X"}
+        if pair:
+            return _external_market_history(yahoo_pair[pair], f"{pair} currency pair")
+    if category in {"commodities", "commodity"}:
+        normalized = name.replace(" ", "")
+        commodity_symbols = (
+            (("GOLD",), "GC=F", "international gold futures in USD"),
+            (("SILVER",), "SI=F", "international silver futures in USD"),
+            (("CRUDEOIL", "CRUDE"), "CL=F", "WTI crude futures in USD"),
+            (("NATURALGAS", "NATGAS"), "NG=F", "US natural-gas futures in USD"),
+            (("COPPER",), "HG=F", "COMEX copper futures in USD"),
+        )
+        for tokens, symbol, label in commodity_symbols:
+            if any(token in normalized for token in tokens):
+                return _external_market_history(symbol, label)
+    return None
+
+
 def _mfapi_history(row: dict) -> dict | None:
     """Resolve a fund by an explicit AMFI code or an exact scheme-name match."""
     scheme_code = row.get("scheme_code") or row.get("schemeCode")
@@ -493,6 +575,14 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
             if metrics:
                 item.update(metrics)
                 return item
+
+        # Last-resort public benchmark series for supported gold, commodity
+        # and currency rows. The proxy is marked and never presented as the
+        # exact MCX contract or an unsupported currency pair.
+        metrics = _external_fallback_for_row(row, category)
+        if metrics:
+            item.update(metrics)
+            return item
         return item
 
     out = []
