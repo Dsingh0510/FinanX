@@ -368,10 +368,11 @@ def _mfapi_history(row: dict) -> dict | None:
     Scheme code must come from the Upstox/AMFI scheme metadata; never guess it.
     """
     scheme_code = row.get("scheme_code") or row.get("schemeCode")
-    if not scheme_code:
+    # MFapi accepts numeric AMFI scheme codes, not Upstox instrument keys.
+    if not scheme_code or not str(scheme_code).strip().isdigit():
         return None
     try:
-        response = requests.get(f"https://api.mfapi.in/mf/{quote(str(scheme_code), safe='')}", timeout=8)
+        response = requests.get(f"https://api.mfapi.in/mf/{quote(str(scheme_code).strip(), safe='')}", timeout=8)
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data") or []
