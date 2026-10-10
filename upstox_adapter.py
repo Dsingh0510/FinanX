@@ -1215,8 +1215,8 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         and len(fds) >= 8
     )
     result["_tracking"]["message"] = (
-        "The configured market universe is screened with Upstox market quotes "
-        "and Upstox historical candles. No public market-data provider is used."
+        "Upstox is primary for live quotes and history; labelled public historical/FX "
+        "fallbacks are used only where Upstox data is unavailable."
     )
 
     _ANALYSIS = result
