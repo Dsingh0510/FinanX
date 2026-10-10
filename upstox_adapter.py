@@ -927,6 +927,67 @@ def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int |
     return result
 
 
+def _crosscheck_stock_returns(rows: list[dict]) -> list[dict]:
+    """Cross-check unusually negative Upstox stock returns against adjusted close.
+
+    Only checks the already-tracked stock universe. It never adds symbols to
+    the average, and keeps Upstox history unless adjusted same-symbol data
+    materially disagrees.
+    """
+    candidates = [
+        row for row in rows
+        if any(
+            row.get(key) is not None and float(row[key]) <= threshold
+            for key, threshold in (
+                ("return_1y", -25.0),
+                ("return_3y", -15.0),
+                ("return_5y", -15.0),
+            )
+        )
+    ]
+
+    def check(row):
+        adjusted = _external_stock_history(row)
+        item = dict(row)
+        if not adjusted:
+            item["history_adjusted_crosscheck"] = "unavailable"
+            return item
+        comparable = [
+            key for key in ("return_1y", "return_3y", "return_5y")
+            if item.get(key) is not None and adjusted.get(key) is not None
+        ]
+        differences = {
+            key: round(float(adjusted[key]) - float(item[key]), 2)
+            for key in comparable
+        }
+        item["history_adjusted_crosscheck"] = "compared"
+        item["adjusted_history_differences_pp"] = differences
+        if any(abs(delta) >= 10.0 for delta in differences.values()):
+            for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized", "max_drawdown"):
+                if adjusted.get(key) is not None:
+                    item[key] = adjusted[key]
+            item["history_source"] = adjusted.get("history_source")
+            item["history_mode"] = "adjusted-close-corporate-action-cross-check"
+            item["history_instrument_key"] = adjusted.get("history_instrument_key")
+            item["history_adjustment_note"] = "Adjusted same-symbol history used because Upstox raw-history returns differed by at least 10 percentage points."
+        return item
+
+    if not candidates:
+        return rows
+    by_symbol = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as pool:
+        futures = {pool.submit(check, row): str(row.get("symbol") or row.get("trading_symbol") or row.get("name")) for row in candidates}
+        for future in as_completed(futures):
+            try:
+                by_symbol[futures[future]] = future.result()
+            except Exception:
+                pass
+    return [
+        by_symbol.get(str(row.get("symbol") or row.get("trading_symbol") or row.get("name")), row)
+        for row in rows
+    ]
+
+
 def _load_live_universe() -> dict:
     global _SNAPSHOT, _SNAPSHOT_AT
     now = datetime.now(timezone.utc).timestamp()
@@ -1052,6 +1113,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         return output
 
     stocks = merge(stocks, history_results.get("stocks", []))
+    stocks = _crosscheck_stock_returns(stocks)
     fno_underlyings = history_results.get("fno_underlyings", {})
     enriched_fno = []
     for row in fno:
