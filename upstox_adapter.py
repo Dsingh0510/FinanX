@@ -997,7 +997,14 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         output = []
         for row in rows:
             key = str(row.get("instrument_key") or row.get("symbol") or row.get("name"))
-            item = dict(by_key.get(key) or row)
+            # Keep the live quote fields from the current snapshot and overlay
+            # only fields actually present in the historical result. Replacing
+            # the entire row used to erase today_change/volume and made breadth
+            # appear as zero despite valid live stock quotes.
+            item = dict(row)
+            history_item = by_key.get(key)
+            if history_item:
+                item.update(history_item)
             output.append(item)
         return output
 
