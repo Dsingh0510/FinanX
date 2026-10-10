@@ -1413,22 +1413,48 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         if any(row.get("history_proxy") for row in currency_history.values()) else "upstox"
     )
 
-    fd_values = [float(x["rate"]) for x in fds if x.get("rate") is not None]
-    fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
+    def average_fd_rate(field):
+        values = []
+        for row in fds:
+            try:
+                value = float(row[field])
+                if 0 < value < 20:
+                    values.append(value)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return round(sum(values) / len(values), 2) if values else None
+
+    fd_1y = average_fd_rate("rate_1y") if fds else None
+    fd_3y = average_fd_rate("rate_3y") if fds else None
+    fd_5y = average_fd_rate("rate_5y") if fds else None
+    fd_senior_1y = average_fd_rate("senior_rate_1y") if fds else None
+    fd_senior_3y = average_fd_rate("senior_rate_3y") if fds else None
+    fd_senior_5y = average_fd_rate("senior_rate_5y") if fds else None
     fd_metrics = {
-        "available": bool(fd_values),
+        "available": any(value is not None for value in (fd_1y, fd_3y, fd_5y)),
         "sample_size": len(fds),
-        "return_1y": fd_rate,
-        "return_3y": fd_rate,
-        "return_5y": fd_rate,
+        "tracked_count": len(fds),
+        "history_count": len(fds),
+        "history_coverage": 100.0 if fds else 0.0,
+        "return_1y": fd_1y,
+        "return_3y": fd_3y,
+        "return_5y": fd_5y,
+        "rate_1y_average": fd_1y,
+        "rate_3y_average": fd_3y,
+        "rate_5y_average": fd_5y,
+        "senior_rate_1y_average": fd_senior_1y,
+        "senior_rate_3y_average": fd_senior_3y,
+        "senior_rate_5y_average": fd_senior_5y,
         "volatility_annualized": 1.0,
-        "rate_average": fd_rate,
+        "rate_average": fd_1y,
+        "average_basis": f"Manual one-year/three-year/five-year FD rates across {len(fds)} banks",
+        "source": "Manually maintained bank-published retail FD rate table",
     }
 
     result = {
         "fd": {
-            "status": "fallback-official-bank-rates",
-            "source": "Official bank FD rate tables",
+            "status": "manual-bank-rate-registry",
+            "source": "Manually maintained bank-published retail FD rates; update market_universe.py when banks revise rates",
             "metrics": fd_metrics,
             "analyzed_options": fds,
             "updated_at": now,
