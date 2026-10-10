@@ -633,6 +633,35 @@ def _bond_instruments(limit=None):
         str(x.get("trading_symbol") or "").upper(),
     ))
     limit = TRACKING_LIMITS["bonds"] if limit is None else limit
+
+    # The Upstox complete master may omit individual government/debt securities.
+    # In that case track listed Indian G-Sec/debt ETFs as explicitly labelled
+    # bond-market proxies. Their live prices and history are real exchange-traded
+    # prices, but are not represented as individual bond quotes.
+    if len(rows) < limit:
+        proxy_symbols = {
+            "LTGILTBEES", "GILT5YBEES", "SETF10GILT", "LICNETFGSC",
+            "BHARATBOND-APR30", "BHARATBOND-APR31", "BHARATBOND-APR33",
+        }
+        existing = {str(x.get("trading_symbol") or "").upper() for x in rows}
+        for row in instruments():
+            if row.get("segment") not in ("NSE_EQ", "BSE_EQ") or row.get("instrument_type") != "EQ":
+                continue
+            symbol = str(row.get("trading_symbol") or "").upper()
+            name = str(row.get("name") or "").upper()
+            if symbol not in proxy_symbols and not (
+                "BHARAT BOND ETF" in name or ("GILT" in name and "ETF" in name)
+            ):
+                continue
+            if symbol in existing or not _instrument_key(row):
+                continue
+            item = dict(row)
+            item["_bond_proxy"] = True
+            item["asset_type"] = "BOND_ETF_PROXY"
+            rows.append(item)
+            existing.add(symbol)
+            if len(rows) >= limit:
+                break
     return rows[:limit]
 
 
@@ -727,7 +756,9 @@ def compare_bonds():
             "volume": q.get("volume") or q.get("ohlc", {}).get("volume"),
             "year_high": q.get("year_high"),
             "year_low": q.get("year_low"),
-            "source": "Upstox market quote",
+            "source": "Upstox market quote" if not row.get("_bond_proxy") else "Upstox market quote (listed G-Sec/debt ETF proxy)",
+            "asset_type": "listed_bond" if not row.get("_bond_proxy") else "bond_etf_proxy",
+            "return_basis": "individual listed debt instrument" if not row.get("_bond_proxy") else "listed debt ETF proxy; not individual-bond return",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     output.sort(key=lambda x: x.get("volume") or 0, reverse=True)
