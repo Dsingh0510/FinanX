@@ -1094,9 +1094,18 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     # representative symbol or model proxy. They remain the exact averages
     # calculated from the tracked entities above.
     stock_data_status = "upstox"
-    gold_data_status = "upstox"
-    commodity_data_status = "upstox"
-    currency_data_status = "upstox"
+    gold_data_status = (
+        "upstox+public-history-proxy"
+        if any(row.get("history_proxy") for row in gold_history.values()) else "upstox"
+    )
+    commodity_data_status = (
+        "upstox+public-history-proxy"
+        if any(row.get("history_proxy") for row in commodity_history.values()) else "upstox"
+    )
+    currency_data_status = (
+        "upstox+public-history-proxy"
+        if any(row.get("history_proxy") for row in currency_history.values()) else "upstox"
+    )
 
     fd_values = [float(x["rate"]) for x in fds if x.get("rate") is not None]
     fd_rate = round(sum(fd_values) / len(fd_values), 2) if fd_values else None
@@ -1134,21 +1143,21 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
         },
         "gold": {
             "status": gold_data_status,
-            "source": "Upstox MCX gold contracts",
+            "source": "Upstox MCX live quotes; labelled Indian gold ETF history proxy when Upstox history is missing",
             "metrics": gold_metrics,
             "analyzed_options": gold,
             "updated_at": now,
         },
         "commodities": {
             "status": commodity_data_status,
-            "source": "Upstox MCX commodity contracts",
+            "source": "Upstox MCX live quotes; labelled public benchmark history proxies where needed",
             "metrics": commodity_metrics,
             "analyzed_options": commodities,
             "updated_at": now,
         },
         "currency": {
             "status": currency_data_status,
-            "source": "Upstox currency futures",
+            "source": "Upstox currency futures; labelled public FX history proxies for missing horizons",
             "metrics": currency_metrics,
             "analyzed_options": currency,
             "updated_at": now,
