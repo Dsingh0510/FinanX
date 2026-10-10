@@ -340,15 +340,75 @@ _INDEX_METRICS_AT = 0.0
 _INDEX_METRICS_TTL = 6 * 60 * 60
 
 
+def _nifty500_daily_metrics(rows: list[tuple[datetime, float]], source: str, symbol: str, fallback: bool) -> dict:
+    """Calculate auditable benchmark returns from daily closes only."""
+    clean = []
+    for dt, price in sorted(rows, key=lambda item: item[0]):
+        if not isinstance(dt, datetime) or not math.isfinite(price) or price <= 0:
+            continue
+        if clean and dt.date() == clean[-1][0].date():
+            clean[-1] = (dt, price)
+        else:
+            clean.append((dt, price))
+
+    out = {
+        "available": False, "sample_size": len(clean),
+        "return_1y": None, "return_3y": None, "return_5y": None,
+        "index_name": "Nifty 500", "benchmark_source": source,
+        "benchmark_symbol": symbol, "benchmark_fallback": fallback,
+        "frequency": "daily", "calculation_method": "close-to-close; CAGR uses actual elapsed days",
+        "latest_close": None, "latest_date": None, "index_variant": "not independently verified",
+        "audit": {},
+    }
+    if len(clean) < 2:
+        return out
+
+    latest_dt, latest = clean[-1]
+    # Reject a history that is too old to represent the current market.
+    age_days = (datetime.now(timezone.utc).date() - latest_dt.date()).days
+    if age_days < -1 or age_days > 7:
+        out["data_status"] = "stale_or_future_dated"
+        return out
+
+    out["latest_close"] = round(latest, 4)
+    out["latest_date"] = latest_dt.date().isoformat()
+    out["latest_age_days"] = age_days
+
+    for key, years, tolerance in (("1y", 1, 7), ("3y", 3, 14), ("5y", 5, 21)):
+        target = latest_dt - timedelta(days=365.2425 * years)
+        prior = min(clean, key=lambda item: abs((item[0] - target).total_seconds()))
+        distance_days = abs((prior[0] - target).total_seconds()) / 86400
+        if prior[1] <= 0 or distance_days > tolerance:
+            continue
+        elapsed_days = (latest_dt - prior[0]).total_seconds() / 86400
+        if elapsed_days <= 0:
+            continue
+        actual_years = elapsed_days / 365.2425
+        pct = ((latest / prior[1]) ** (1 / actual_years) - 1) * 100 if years > 1 else ((latest / prior[1]) - 1) * 100
+        out[f"return_{key}"] = round(pct, 2)
+        out["audit"][key] = {
+            "latest_date": latest_dt.date().isoformat(),
+            "latest_close": round(latest, 6),
+            "comparison_date": prior[0].date().isoformat(),
+            "comparison_close": round(prior[1], 6),
+            "elapsed_days": round(elapsed_days, 2),
+            "formula": "((latest_close / comparison_close) - 1) * 100" if years == 1 else "((latest_close / comparison_close) ** (365.2425 / elapsed_days) - 1) * 100",
+            "target_date": target.date().isoformat(),
+            "target_distance_days": round(distance_days, 2),
+        }
+
+    out["available"] = out["return_1y"] is not None
+    out["data_status"] = "validated" if out["available"] else "insufficient_verified_history"
+    return out
+
+
 def _nifty500_index_metrics() -> dict:
-    """Load Nifty 500 index history, with labelled provider/index fallbacks."""
+    """Load Nifty 500 daily history; never substitute a different index."""
     global _INDEX_METRICS_CACHE, _INDEX_METRICS_AT
     now_ts = datetime.now(timezone.utc).timestamp()
     if _INDEX_METRICS_CACHE and now_ts - _INDEX_METRICS_AT < _INDEX_METRICS_TTL:
         return dict(_INDEX_METRICS_CACHE)
 
-    # Prefer an exact index instrument key discovered from Upstox's instrument
-    # master. Do not accidentally use a stock or ETF as the index itself.
     candidates = []
     try:
         from market_universe import instruments, _instrument_key
@@ -367,47 +427,45 @@ def _nifty500_index_metrics() -> dict:
                 "INDEX" in str(row.get("segment") or "").upper()
                 or "INDEX" in key.upper()
             ):
-                candidates.append(key)
+                candidates.append((key, label))
+
     except Exception:
         logger.exception("Unable to discover Nifty 500 in Upstox instrument master")
 
-    for key in dict.fromkeys(candidates):
+    for key, label in dict.fromkeys(candidates):
+        # Avoid an instrument explicitly identified as TRI/Total Return.
+        if "TRI" in label or "TOTAL RETURN" in label:
+            continue
         try:
-            series = _series(key, unit="months")
-            metrics = _metrics(series)
-            if metrics.get("return_1y") is not None:
-                metrics.update({
-                    "index_name": "Nifty 500",
-                    "benchmark_source": "Upstox historical index candles",
-                    "benchmark_symbol": key,
-                    "benchmark_fallback": False,
-                })
+            series = _series(key, unit="days")
+            metrics = _nifty500_daily_metrics(
+                series, "Upstox historical daily index candles", key, False
+            )
+            if metrics.get("available"):
+                metrics["index_variant"] = "Price Index (instrument label does not identify TRI)"
                 _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = metrics, now_ts
                 return dict(metrics)
         except Exception:
-            logger.exception("Upstox Nifty 500 history failed for %s", key)
+            logger.exception("Upstox daily Nifty 500 history failed for %s", key)
 
-    # Public-history fallback: Nifty 500 first, then Nifty 50 only if the
-    # Nifty 500 series is unavailable. Keep the displayed benchmark name honest.
+    # Public fallback is only the Nifty 500 ticker. Do not substitute Nifty 50.
     end_ts = int(datetime.now(timezone.utc).timestamp())
-    start_ts = end_ts - (365 * 5 + 220) * 24 * 60 * 60
-    for ticker, label in (("^CRSLDX", "Nifty 500"), ("^NSEI", "Nifty 50")):
-        try:
-            response = requests.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}",
-                params={"period1": start_ts, "period2": end_ts, "interval": "1mo", "events": "history"},
-                headers={"User-Agent": "Mozilla/5.0 FinanX/1.0"},
-                timeout=_HISTORY_TIMEOUT,
-            )
-            response.raise_for_status()
-            chart = (response.json().get("chart") or {})
-            result_rows = chart.get("result") or []
-            if not result_rows:
-                continue
+    start_ts = end_ts - int((365.2425 * 5 + 60) * 24 * 60 * 60)
+    ticker = "^CRSLDX"
+    try:
+        response = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}",
+            params={"period1": start_ts, "period2": end_ts, "interval": "1d", "events": "history"},
+            headers={"User-Agent": "Mozilla/5.0 FinanX/1.0"},
+            timeout=_HISTORY_TIMEOUT,
+        )
+        response.raise_for_status()
+        chart = response.json().get("chart") or {}
+        result_rows = chart.get("result") or []
+        if result_rows:
             item = result_rows[0]
             timestamps = item.get("timestamp") or []
-            quote_rows = ((item.get("indicators") or {}).get("quote") or [{}])[0]
-            closes = quote_rows.get("close") or []
+            closes = (((item.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
             series = []
             for stamp, close in zip(timestamps, closes):
                 if close is None:
@@ -417,32 +475,27 @@ def _nifty500_index_metrics() -> dict:
                     dt = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
                 except (TypeError, ValueError, OSError):
                     continue
-                if price > 0:
+                if math.isfinite(price) and price > 0:
                     series.append((dt, price))
-            series.sort(key=lambda x: x[0])
-            metrics = _metrics(series)
-            if metrics.get("return_1y") is None:
-                continue
-            metrics.update({
-                "index_name": label,
-                "benchmark_source": "Yahoo Finance historical index series (public fallback)",
-                "benchmark_symbol": ticker,
-                "benchmark_fallback": True,
-            })
-            _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = metrics, now_ts
-            return dict(metrics)
-        except Exception:
-            logger.exception("Public index history failed for %s", ticker)
+            metrics = _nifty500_daily_metrics(
+                series, "Yahoo Finance daily index series (public fallback)", ticker, True
+            )
+            if metrics.get("available"):
+                metrics["index_variant"] = "Price Index (public ticker; provider metadata not independently verified)"
+                _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = metrics, now_ts
+                return dict(metrics)
+    except Exception:
+        logger.exception("Yahoo Finance daily Nifty 500 history failed")
 
-    return {
-        "available": False,
-        "return_1y": None,
-        "return_3y": None,
-        "return_5y": None,
-        "index_name": "Nifty 500",
-        "benchmark_source": "unavailable",
-        "benchmark_fallback": True,
+    unavailable = {
+        "available": False, "return_1y": None, "return_3y": None, "return_5y": None,
+        "index_name": "Nifty 500", "benchmark_source": "unavailable",
+        "benchmark_symbol": None, "benchmark_fallback": False,
+        "frequency": "daily", "index_variant": "not verified",
+        "data_status": "unavailable_or_unverified", "audit": {},
     }
+    _INDEX_METRICS_CACHE, _INDEX_METRICS_AT = unavailable, now_ts
+    return dict(unavailable)
 
 def _fill_derivative_horizon_gaps(metrics: dict, series: list[tuple[datetime, float]]) -> dict:
     """Fill missing long horizons from the longest real derivative history.
