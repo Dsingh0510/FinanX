@@ -445,6 +445,19 @@ def _external_fallback_for_row(row: dict, category: str) -> dict | None:
     return None
 
 
+def _external_stock_history(row: dict) -> dict | None:
+    """Fetch split/dividend-adjusted history to validate anomalous Upstox stock returns.
+
+    Upstox remains primary. The adjusted public series is used only when its
+    same-symbol horizon return materially disagrees with Upstox, which can
+    indicate a corporate-action adjustment problem in raw OHLC history.
+    """
+    symbol = str(row.get("trading_symbol") or row.get("symbol") or "").strip().upper()
+    if not symbol or not re.fullmatch(r"[A-Z0-9&._-]+", symbol):
+        return None
+    return _external_market_history(f"{symbol}.NS", f"NSE adjusted history for {symbol}")
+
+
 def _mfapi_history(row: dict) -> dict | None:
     """Resolve a fund by an explicit AMFI code or an exact scheme-name match."""
     scheme_code = row.get("scheme_code") or row.get("schemeCode")
@@ -591,6 +604,26 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
                     item["history_source"] = source
                     item["history_mode"] = "single-instrument"
                     item["history_instrument_key"] = key
+
+                    # Keep Upstox as the primary stock-history source. If the
+                    # adjusted same-symbol series disagrees materially on a
+                    # comparable horizon, use it to avoid split/demerger
+                    # distortions; the alternate source is explicitly labelled.
+                    if str(category).lower() in {"stocks", "stock"}:
+                        adjusted = _external_stock_history(row)
+                        if adjusted:
+                            comparable = [
+                                k for k in ("return_1y", "return_3y", "return_5y")
+                                if item.get(k) is not None and adjusted.get(k) is not None
+                            ]
+                            if any(abs(float(item[k]) - float(adjusted[k])) >= 20.0 for k in comparable):
+                                for k in ("return_1y", "return_3y", "return_5y", "volatility_annualized", "max_drawdown"):
+                                    if adjusted.get(k) is not None:
+                                        item[k] = adjusted[k]
+                                item["history_source"] = adjusted.get("history_source")
+                                item["history_mode"] = "adjusted-close-corporate-action-cross-check"
+                                item["history_instrument_key"] = adjusted.get("history_instrument_key")
+                                item["history_adjustment_note"] = "Used adjusted same-symbol history because Upstox raw-history returns materially disagreed."
                     return item
             except Exception:
                 continue
