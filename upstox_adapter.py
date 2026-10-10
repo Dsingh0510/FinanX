@@ -597,6 +597,38 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
 
 
 def _history_for_segment_entities(rows: list[dict], limit: int | None = None, category: str | None = None) -> dict:
+    def backfill_missing_horizons(item: dict, row: dict) -> dict:
+        """Fill only unavailable horizons from a labelled public benchmark."""
+        category_name = str(category or "").lower()
+        if category_name not in {"gold", "commodities", "currency"}:
+            return item
+        proxy = _external_fallback_for_row(row, category_name)
+        if not proxy:
+            return item
+        horizon_sources = dict(item.get("history_horizon_sources") or {})
+        horizon_instruments = dict(item.get("history_horizon_instruments") or {})
+        used = False
+        primary_source = str(item.get("history_source") or "Upstox historical candles")
+        primary_instrument = str(item.get("history_instrument_key") or item.get("instrument_key") or "")
+        for key in ("return_1y", "return_3y", "return_5y"):
+            if item.get(key) is not None:
+                horizon_sources.setdefault(key, primary_source)
+                horizon_instruments.setdefault(key, primary_instrument)
+            elif proxy.get(key) is not None:
+                item[key] = proxy[key]
+                horizon_sources[key] = proxy.get("history_source", "Public historical benchmark")
+                horizon_instruments[key] = proxy.get("history_instrument_key")
+                used = True
+        if used:
+            item["history_proxy"] = True
+            item["history_horizon_sources"] = horizon_sources
+            item["history_horizon_instruments"] = horizon_instruments
+            item["history_source"] = (
+                f"{primary_source}; missing horizons filled from "
+                f"{proxy.get('history_source', 'public benchmark')} (labelled proxy)"
+            )
+            item["available"] = any(item.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))
+        return item
     """Return one real historical result per unique segment entity.
 
     Derivative contracts can expire, so use the stable underlying first when
@@ -703,6 +735,7 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None, ca
                         mode if not underlying_metrics else "continuous-rollover+underlying-backfill"
                     )
                     item["history_instrument_key"] = representative.get("instrument_key") or representative.get("symbol")
+                    item = backfill_missing_horizons(item, representative)
                     return entity_key, item
             except Exception:
                 pass
@@ -719,6 +752,7 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None, ca
                     item["history_source"] = source
                     item["history_mode"] = "single-instrument"
                     item["history_instrument_key"] = history_key
+                    item = backfill_missing_horizons(item, representative)
                     return entity_key, item
             except Exception:
                 continue
@@ -733,6 +767,17 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None, ca
             item["entity_key"] = entity_key
             item.update(proxy_metrics)
             item["history_proxy"] = True
+            item["history_proxy_only"] = True
+            item["history_horizon_sources"] = {
+                key: proxy_metrics.get("history_source")
+                for key in ("return_1y", "return_3y", "return_5y")
+                if proxy_metrics.get(key) is not None
+            }
+            item["history_horizon_instruments"] = {
+                key: proxy_metrics.get("history_instrument_key")
+                for key in ("return_1y", "return_3y", "return_5y")
+                if proxy_metrics.get(key) is not None
+            }
             return entity_key, item
 
         return entity_key, None
@@ -759,14 +804,13 @@ def _history_for_fno_underlyings(rows: list[dict], limit: int | None = None) -> 
 
 
 def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int | None = None) -> dict:
-    # Do not count one proxy benchmark multiple times just because several
-    # contracts map to the same public series.
+    # Coverage counts independent entities; a proxy-only series is counted once.
     valid = []
     seen_proxy_series = set()
     for row in rows:
         if not any(row.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
             continue
-        if row.get("history_proxy"):
+        if row.get("history_proxy_only"):
             series_id = row.get("history_instrument_key") or row.get("history_source")
             if series_id in seen_proxy_series:
                 continue
@@ -784,10 +828,26 @@ def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int |
         "return_5y": None,
         "volatility_annualized": None,
     }
-    for key in ("return_1y", "return_3y", "return_5y", "volatility_annualized"):
-        values = [float(x[key]) for x in valid if x.get(key) is not None]
+    for key in ("return_1y", "return_3y", "return_5y"):
+        values = []
+        seen_horizon_proxies = set()
+        for row in valid:
+            value = row.get(key)
+            if value is None:
+                continue
+            source = str((row.get("history_horizon_sources") or {}).get(key) or row.get("history_source") or "")
+            instrument = (row.get("history_horizon_instruments") or {}).get(key)
+            if "Yahoo Finance historical series" in source:
+                proxy_id = instrument or source
+                if proxy_id in seen_horizon_proxies:
+                    continue
+                seen_horizon_proxies.add(proxy_id)
+            values.append(float(value))
         if values:
             result[key] = round(sum(values) / len(values), 2)
+    volatility_values = [float(x["volatility_annualized"]) for x in valid if x.get("volatility_annualized") is not None]
+    if volatility_values:
+        result["volatility_annualized"] = round(sum(volatility_values) / len(volatility_values), 2)
     if result["volatility_annualized"] is None:
         result["volatility_annualized"] = default_vol
     result["average_basis"] = (
