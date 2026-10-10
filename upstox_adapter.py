@@ -427,7 +427,7 @@ def _external_fallback_for_row(row: dict, category: str) -> dict | None:
         return _external_market_history("GOLDBEES.NS", "Indian gold ETF proxy in INR")
     if category in {"currency"}:
         pair = next((p for p in ("USDINR", "EURINR", "GBPINR", "JPYINR") if p in name.replace("/", "").replace("-", "")), None)
-        yahoo_pair = {"USDINR": "INR=X", "EURINR": "EURINR=X", "GBPINR": "GBPINR=X", "JPYINR": "JPYINR=X"}
+        yahoo_pair = {"USDINR": "USDINR=X", "EURINR": "EURINR=X", "GBPINR": "GBPINR=X", "JPYINR": "JPYINR=X"}
         if pair:
             return _external_market_history(yahoo_pair[pair], f"{pair} currency pair")
     if category in {"commodities", "commodity"}:
@@ -596,7 +596,7 @@ def _history_for_rows(rows: list[dict], category: str, limit: int | None = None,
     return out
 
 
-def _history_for_segment_entities(rows: list[dict], limit: int | None = None) -> dict:
+def _history_for_segment_entities(rows: list[dict], limit: int | None = None, category: str | None = None) -> dict:
     """Return one real historical result per unique segment entity.
 
     Derivative contracts can expire, so use the stable underlying first when
@@ -723,6 +723,18 @@ def _history_for_segment_entities(rows: list[dict], limit: int | None = None) ->
             except Exception:
                 continue
 
+        # Last-resort public history is category-aware and explicitly labelled.
+        # Never apply this to F&O option contracts; this path is for the gold,
+        # commodity and currency analysis segments only.
+        proxy_metrics = _external_fallback_for_row(representative, str(category or ""))
+        if proxy_metrics:
+            item = dict(representative)
+            item["instrument_key"] = entity_key
+            item["entity_key"] = entity_key
+            item.update(proxy_metrics)
+            item["history_proxy"] = True
+            return entity_key, item
+
         return entity_key, None
 
     result = {}
@@ -747,7 +759,19 @@ def _history_for_fno_underlyings(rows: list[dict], limit: int | None = None) -> 
 
 
 def _category_metrics(rows: list[dict], default_vol: float, tracked_count: int | None = None) -> dict:
-    valid = [x for x in rows if any(x.get(k) is not None for k in ("return_1y", "return_3y", "return_5y"))]
+    # Do not count one proxy benchmark multiple times just because several
+    # contracts map to the same public series.
+    valid = []
+    seen_proxy_series = set()
+    for row in rows:
+        if not any(row.get(k) is not None for k in ("return_1y", "return_3y", "return_5y")):
+            continue
+        if row.get("history_proxy"):
+            series_id = row.get("history_instrument_key") or row.get("history_source")
+            if series_id in seen_proxy_series:
+                continue
+            seen_proxy_series.add(series_id)
+        valid.append(row)
     total = len(rows) if tracked_count is None else max(int(tracked_count), len(valid))
     result = {
         "available": bool(valid),
@@ -858,7 +882,7 @@ def category_market_analysis(*, allow_stale: bool = False, force: bool = False) 
     history_results = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
-            pool.submit(load_history, rows, category, limit): key
+            pool.submit(load_history, rows, category, limit, key)
             for key, (rows, category, limit) in history_jobs.items()
         }
         fno_future = pool.submit(
