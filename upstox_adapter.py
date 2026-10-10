@@ -466,7 +466,7 @@ def _mfapi_history(row: dict) -> dict | None:
                 text = str(value or "").casefold().replace("&", "and")
                 text = re.sub(r"[^a-z0-9]+", " ", text)
                 # Upstox and AMFI sometimes format plan/option labels differently.
-                text = re.sub(r"\\b(direct|regular|growth|idcw|dividend|plan|option)\\b", " ", text)
+                text = re.sub(r"\b(direct|regular|growth|idcw|dividend|plan|option)\b", " ", text)
                 return " ".join(text.split())
             normalized_name = norm(name)
             exact = [m for m in matches if norm(m.get("schemeName")) == normalized_name]
