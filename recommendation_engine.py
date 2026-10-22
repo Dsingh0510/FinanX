@@ -248,12 +248,56 @@ def _rank_entity_options(category: str, market_row: Dict, risk: str, horizon: in
     return ranked
 
 
+
+def _suggestion_rounding_step(amount: float) -> int:
+    """Choose readable investment denominations without excessive rounding."""
+    if amount >= 100_000:
+        return 1_000
+    if amount >= 25_000:
+        return 500
+    if amount >= 5_000:
+        return 100
+    if amount >= 2_000:
+        return 50
+    return 10
+
+
+def _rounded_amounts(total_amount: float, weights: List[float], step: int) -> List[float]:
+    """Round suggested amounts to a denomination while preserving the exact total."""
+    if not weights:
+        return []
+    total_units = max(0, int(round(total_amount / step)))
+    positive = [max(float(w), 0.0) for w in weights]
+    weight_sum = sum(positive)
+    if weight_sum <= 0:
+        positive = [1.0] * len(weights)
+        weight_sum = float(len(weights))
+    exact_units = [total_units * w / weight_sum for w in positive]
+    units = [int(math.floor(value)) for value in exact_units]
+    remaining = total_units - sum(units)
+    order = sorted(range(len(units)), key=lambda i: exact_units[i] - units[i], reverse=True)
+    for i in order[:remaining]:
+        units[i] += 1
+    return [float(unit * step) for unit in units]
+
 def _select_entity_allocations(amount: float, category_weights: Dict[str, float], market_segments: Dict, risk: str, horizon: int, goal: str) -> Dict[str, List[Dict]]:
     """Split each category amount across the strongest tracked entities."""
     selected = {}
+    rounding_step = _suggestion_rounding_step(amount)
+    positive_categories = [(k, max(float(v), 0.0)) for k, v in category_weights.items() if float(v) > 0]
+    rounded_category_amounts = _rounded_amounts(
+        amount, [v for _, v in positive_categories], rounding_step
+    )
+    category_amount_map = {
+        key: rounded_category_amounts[i]
+        for i, (key, _) in enumerate(positive_categories)
+    }
 
     for category, category_pct in category_weights.items():
         if category_pct <= 0:
+            continue
+        cat_amount = category_amount_map.get(category, 0.0)
+        if cat_amount <= 0:
             continue
         ranked = _rank_entity_options(category, market_segments.get(category, {}), risk, horizon, goal)
 
@@ -273,7 +317,7 @@ def _select_entity_allocations(amount: float, category_weights: Dict[str, float]
                 'category': category,
                 'score': 0.0,
                 'weight_within_category': 1.0,
-                'invested': round(amount * category_pct, 2),
+                'invested': cat_amount,
                 'annual_return_estimate': planning['annual_return_estimate'],
                 'volatility_estimate': planning['volatility_estimate'],
                 'yoy_return': planning.get('yoy_return'),
@@ -284,15 +328,15 @@ def _select_entity_allocations(amount: float, category_weights: Dict[str, float]
             continue
 
         positive = [max(x['score'] + 10.0, 0.1) for x in chosen]
-        total = sum(positive)
-        cat_amount = amount * category_pct
+        rounded_entity_amounts = _rounded_amounts(cat_amount, positive, rounding_step)
 
         bucket = []
-        for x, raw_score in zip(chosen, positive):
-            within = raw_score / total
+        amount_sum = sum(rounded_entity_amounts)
+        for x, raw_score, invested_amount in zip(chosen, positive, rounded_entity_amounts):
+            within = invested_amount / amount_sum if amount_sum else 0.0
             item = dict(x)
             item['weight_within_category'] = round(within, 6)
-            item['invested'] = round(cat_amount * within, 2)
+            item['invested'] = invested_amount
             bucket.append(item)
         selected[category] = bucket
 
