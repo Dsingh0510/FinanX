@@ -509,42 +509,62 @@ def _shift_mix(base, risk, direction):
 
 
 def _apply_liquidity_emergency(weights, risk, liquidity, emergency, horizon):
-    """Apply explicit user cash-access and emergency-fund preferences to weights."""
-    w = dict(weights)
+    """Apply visible, meaningful cash-access and emergency-reserve adjustments."""
+    w = {k: max(float(v), 0.0) for k, v in weights.items()}
 
-    def shift_from_to(sources, destinations, amount):
-        available = sum(max(w.get(k, 0.0), 0.0) for k in sources)
+    def shift_proportionally(sources, destinations, amount, destination_shares=None):
+        available = sum(w.get(k, 0.0) for k in sources)
         moved = min(max(amount, 0.0), available)
-        if moved <= 0 or available <= 0:
+        if moved <= 1e-9 or available <= 1e-9:
             return
         for key in sources:
-            take = moved * max(w.get(key, 0.0), 0.0) / available
+            take = moved * w.get(key, 0.0) / available
             w[key] = max(0.0, w.get(key, 0.0) - take)
-        dest_total = sum(max(w.get(k, 0.0), 0.0) for k in destinations) or len(destinations)
+        shares = destination_shares or {k: 1.0 / len(destinations) for k in destinations}
+        share_total = sum(max(float(shares.get(k, 0.0)), 0.0) for k in destinations) or 1.0
         for key in destinations:
-            share = max(w.get(key, 0.0), 0.0) / dest_total if dest_total else 1 / len(destinations)
+            share = max(float(shares.get(key, 0.0)), 0.0) / share_total
             w[key] = w.get(key, 0.0) + moved * share
 
-    # If no separate emergency reserve exists, prioritize accessible/stable
-    # holdings instead of leaving the growth-heavy market score unchanged.
+    # No emergency reserve: prioritize a stable, accessible buffer. Gold is
+    # excluded as a buffer because its price can fall; broad mutual funds and
+    # bonds are not assumed to be instantly accessible or capital-guaranteed.
     if emergency == 'no':
-        shift_from_to(
-            ['stocks', 'commodities', 'currency', 'fno', 'mutual-funds'],
+        shift_proportionally(
+            ['fno', 'currency', 'commodities', 'stocks', 'gold', 'mutual-funds'],
             ['fd', 'bonds'],
-            0.08,
+            0.15,
+            {'fd': 0.80, 'bonds': 0.20},
         )
-    elif emergency == 'yes':
-        # With a reserve already set aside, avoid forcing an extra emergency
-        # buffer into this investable portfolio.
-        shift_from_to(['fd'], ['mutual-funds', 'stocks'], 0.03 if horizon >= 5 else 0.0)
+    else:
+        # When a reserve already exists, retain a normal investable mix; only a
+        # small long-horizon tilt away from excess FD allocation is permitted.
+        if horizon >= 5 and risk != 'low':
+            shift_proportionally(['fd'], ['mutual-funds', 'stocks'], 0.02,
+                                 {'mutual-funds': 0.65, 'stocks': 0.35})
 
     if liquidity == 'high':
-        shift_from_to(['stocks', 'commodities', 'currency', 'fno', 'mutual-funds', 'gold'], ['fd', 'bonds'], 0.08)
+        shift_proportionally(
+            ['fno', 'currency', 'commodities', 'stocks', 'gold', 'mutual-funds'],
+            ['fd', 'bonds'],
+            0.12,
+            {'fd': 0.80, 'bonds': 0.20},
+        )
+    elif liquidity == 'medium':
+        # Moderate access means a modest tilt to more stable holdings, without
+        # pretending that every bond or FD can be withdrawn without conditions.
+        shift_proportionally(
+            ['fno', 'currency', 'commodities'],
+            ['fd', 'bonds'],
+            0.03,
+            {'fd': 0.75, 'bonds': 0.25},
+        )
     elif liquidity == 'low' and horizon >= 5 and emergency == 'yes' and risk != 'low':
-        shift_from_to(['fd', 'bonds'], ['mutual-funds', 'stocks'], 0.05)
+        shift_proportionally(['fd', 'bonds'], ['mutual-funds', 'stocks'], 0.05,
+                             {'mutual-funds': 0.65, 'stocks': 0.35})
 
-    return _fit_to_risk_caps(w, risk)
-
+    capped = _fit_to_risk_caps(w, risk)
+    return capped if capped else w
 
 def _candidate_plans(scores, risk, horizon, liquidity='medium', emergency='yes'):
     base = build_dynamic_weights(scores, risk)
