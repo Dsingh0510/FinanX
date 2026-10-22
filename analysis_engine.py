@@ -32,7 +32,9 @@ RISK_CAPS = {
         'stocks': 0.25, 'commodities': 0.10, 'currency': 0.02, 'fno': 0.00,
     },
     'high': {
-        'fd': 0.35, 'bonds': 0.30, 'mutual-funds': 0.45, 'gold': 0.22,
+        # High risk means growth-oriented, not risk-blind: retain a modest
+        # stability sleeve while preventing FD/bonds from dominating the mix.
+        'fd': 0.25, 'bonds': 0.25, 'mutual-funds': 0.45, 'gold': 0.20,
         'stocks': 0.45, 'commodities': 0.15, 'currency': 0.05, 'fno': 0.02,
     },
 }
