@@ -39,63 +39,66 @@ RISK_CAPS = {
 
 
 def apply_risk_caps(weights: Dict[str, float], risk: str) -> Dict[str, float]:
-    """Apply category caps to a probability vector until all caps are met.
+    """Normalize weights while strictly respecting every category ceiling.
 
-    Weight removed from an excluded/capped category is redistributed only to
-    categories that still have spare capacity. The redistribution is repeated
-    to a fixed point, so a later cap can never push an earlier cap back over its
-    ceiling.
+    Uses iterative capped proportional allocation: when a category reaches its
+    ceiling, it is fixed there and the remaining budget is redistributed among
+    categories that still have room. Excluded categories remain exactly zero.
     """
+    if risk not in RISK_CAPS:
+        return {}
     caps = RISK_CAPS[risk]
-    w = {k: max(float(v), 0.0) for k, v in weights.items() if float(v) > 0.0}
-    if not w:
+    keys = list(caps)
+    clean = {k: max(float(weights.get(k, 0.0) or 0.0), 0.0) for k in keys}
+    eligible = [k for k in keys if caps[k] > 0.0]
+    if not eligible or sum(caps[k] for k in eligible) < 1.0 - 1e-9:
         return {}
 
-    excluded = [k for k in list(w) if caps.get(k, 1.0) <= 0.0]
-    removed = sum(w.pop(k) for k in excluded)
-    if removed > 0:
-        eligible = [k for k in w if caps.get(k, 1.0) > w[k] + 1e-12]
-        room = sum(max(caps.get(k, 1.0) - w[k], 0.0) for k in eligible)
-        if room > 0:
-            for k in eligible:
-                w[k] += removed * max(caps.get(k, 1.0) - w[k], 0.0) / room
+    # If a score vector is all zero, use equal weights among allowed categories.
+    if sum(clean[k] for k in eligible) <= 1e-12:
+        clean = {k: (1.0 if k in eligible else 0.0) for k in keys}
+
+    result = {k: 0.0 for k in keys}
+    remaining = 1.0
+    open_keys = list(eligible)
+
+    for _ in range(len(keys) + 2):
+        if remaining <= 1e-10 or not open_keys:
+            break
+        weight_sum = sum(clean[k] for k in open_keys)
+        if weight_sum <= 1e-12:
+            shares = {k: remaining / len(open_keys) for k in open_keys}
         else:
-            return {}
+            shares = {k: remaining * clean[k] / weight_sum for k in open_keys}
 
-    for _ in range(len(caps) * 4 + 4):
-        changed = False
-        for k in list(w):
-            cap = caps.get(k, 1.0)
-            if w[k] <= cap + 1e-10:
-                continue
-
-            excess = w[k] - cap
-            w[k] = cap
-            eligible = [
-                x for x in w
-                if x != k and w[x] < caps.get(x, 1.0) - 1e-10
-            ]
-            room = sum(max(caps.get(x, 1.0) - w[x], 0.0) for x in eligible)
-            if room > 0:
-                for x in eligible:
-                    spare = max(caps.get(x, 1.0) - w[x], 0.0)
-                    w[x] += excess * spare / room
-            else:
-                # The configured ceilings have enough total capacity for a
-                # normalized portfolio; reaching this branch means the input
-                # vector is malformed rather than merely over a cap.
-                return {}
-            changed = True
-
-        if not changed:
+        capped_now = [k for k in open_keys if shares[k] > caps[k] + 1e-10]
+        if not capped_now:
+            for k in open_keys:
+                result[k] = shares[k]
+            remaining = 0.0
             break
 
-    # Final guard: never return a portfolio that violates any configured cap.
-    if any(w.get(k, 0.0) > cap + 1e-8 for k, cap in caps.items()):
-        return {}
+        for k in capped_now:
+            result[k] = caps[k]
+            remaining -= caps[k]
+            open_keys.remove(k)
 
-    total = sum(w.values())
-    return {k: v / total for k, v in w.items()} if total > 0 else {}
+    if remaining > 1e-7:
+        # Caps must permit a full portfolio; fill remaining capacity safely.
+        for k in eligible:
+            room = max(caps[k] - result[k], 0.0)
+            add = min(room, remaining)
+            result[k] += add
+            remaining -= add
+            if remaining <= 1e-9:
+                break
+
+    total = sum(result.values())
+    if total <= 0 or abs(total - 1.0) > 1e-6:
+        return {}
+    if any(result[k] > caps[k] + 1e-7 for k in keys):
+        return {}
+    return {k: result[k] for k in keys if result[k] > 1e-12}
 
 
 CATEGORY_RISK = {
