@@ -352,9 +352,18 @@ def _select_entity_allocations(amount: float, category_weights: Dict[str, float]
 
 
 def _portfolio_projection(amount: float, allocations: Dict[str, float], market_segments: Dict, years: int, risk: str = 'moderate', horizon: int | None = None, goal: str = 'balanced_growth'):
-    """Project using entity-level returns, not category averages alone."""
+    """Project using rounded category and entity amounts that reconcile to the input."""
     horizon = years if horizon is None else horizon
-    entity_allocations = _select_entity_allocations(amount, allocations, market_segments, risk, horizon, goal)
+    active = [(slug, max(float(pct), 0.0)) for slug, pct in allocations.items() if float(pct) > 0]
+    step = _suggestion_rounding_step(amount)
+    rounded_category_amounts = _rounded_amounts(amount, [pct for _, pct in active], step)
+    category_amounts = {slug: rounded_category_amounts[i] for i, (slug, _) in enumerate(active)}
+    # Derive weights from the displayed rounded amounts so the recommendation,
+    # percentages, and totals all use the same allocation basis.
+    adjusted_allocations = {
+        slug: value / amount for slug, value in category_amounts.items() if value > 0
+    }
+    entity_allocations = _select_entity_allocations(amount, adjusted_allocations, market_segments, risk, horizon, goal)
 
     total_return_numerator = 0.0
     total_vol_numerator = 0.0
@@ -363,25 +372,17 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
     per_asset = []
     entity_rows = []
 
-    for slug, pct in allocations.items():
+    for slug, pct in adjusted_allocations.items():
         category_bucket = entity_allocations.get(slug) or []
-        if not category_bucket:
+        category_invested = category_amounts[slug]
+        if category_invested <= 0 or not category_bucket:
             continue
-
-        category_invested = amount * pct
         cat_projected = 0.0
         cat_return = 0.0
         cat_vol = 0.0
 
         for entity in category_bucket:
-            invested = entity.get('invested')
-            if invested is None:
-                within = float(entity.get('weight_within_category', 0.0) or 0.0)
-                if within <= 0:
-                    within = 1.0
-                invested = category_invested * within
-            else:
-                invested = float(invested)
+            invested = float(entity.get('invested') or 0.0)
             rate = entity['annual_return_estimate']
             vol = entity['volatility_estimate']
             v3_rate = entity.get('three_year_return')
@@ -435,9 +436,9 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
             'slug': slug,
             'asset': cat_info['name'] if cat_info else slug,
             'invested': round(category_invested, 2),
-            'percent': round(pct * 100, 1),
+            'percent': round(category_invested / amount * 100, 1),
             'annual_return_estimate': round(category_rate, 2),
-            'yoy_return': round(sum(x['invested'] * (x.get('yoy_return') or x['annual_return_estimate']) for x in category_bucket) / category_invested, 2),
+            'yoy_return': round(sum(x['invested'] * (x.get('yoy_return') if x.get('yoy_return') is not None else x['annual_return_estimate']) for x in category_bucket) / category_invested, 2),
             'three_year_return': round(v3_cat, 2),
             'five_year_return': round(v5_cat, 2),
             'projected_3y_value': round(cat_projected_3, 2),
@@ -454,19 +455,16 @@ def _portfolio_projection(amount: float, allocations: Dict[str, float], market_s
     annual = total_return_numerator
     return {
         'annual_return_estimate': round(annual, 2),
-        # Correlations are not available from the current tracked-history feed,
-        # so this is a conservative weighted-volatility upper-bound proxy, not a
-        # correlation-aware portfolio standard deviation.
         'portfolio_volatility_estimate': round(total_vol_numerator, 2),
         'portfolio_volatility_method': 'weighted volatility upper-bound proxy; correlations unavailable',
         'projected_value': round(projected_total, 2),
         'projected_gain': round(projected_gain, 2),
         'projected_3y_value': round(sum(
-            _project(x['invested'], x['three_year_return'] or x['annual_return_estimate'], 3)
+            _project(x['invested'], x['three_year_return'] if x['three_year_return'] is not None else x['annual_return_estimate'], 3)
             for x in per_asset
         ), 2),
         'projected_5y_value': round(sum(
-            _project(x['invested'], x['five_year_return'] or x['annual_return_estimate'], 5)
+            _project(x['invested'], x['five_year_return'] if x['five_year_return'] is not None else x['annual_return_estimate'], 5)
             for x in per_asset
         ), 2),
         'per_asset': per_asset,
