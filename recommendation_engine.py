@@ -508,22 +508,75 @@ def _shift_mix(base, risk, direction):
     return _fit_to_risk_caps(w, risk)
 
 
-def _candidate_plans(scores, risk, horizon):
+def _apply_liquidity_emergency(weights, risk, liquidity, emergency, horizon):
+    """Apply explicit user cash-access and emergency-fund preferences to weights."""
+    w = dict(weights)
+
+    def shift_from_to(sources, destinations, amount):
+        available = sum(max(w.get(k, 0.0), 0.0) for k in sources)
+        moved = min(max(amount, 0.0), available)
+        if moved <= 0 or available <= 0:
+            return
+        for key in sources:
+            take = moved * max(w.get(key, 0.0), 0.0) / available
+            w[key] = max(0.0, w.get(key, 0.0) - take)
+        dest_total = sum(max(w.get(k, 0.0), 0.0) for k in destinations) or len(destinations)
+        for key in destinations:
+            share = max(w.get(key, 0.0), 0.0) / dest_total if dest_total else 1 / len(destinations)
+            w[key] = w.get(key, 0.0) + moved * share
+
+    # If no separate emergency reserve exists, prioritize accessible/stable
+    # holdings instead of leaving the growth-heavy market score unchanged.
+    if emergency == 'no':
+        shift_from_to(
+            ['stocks', 'commodities', 'currency', 'fno', 'mutual-funds'],
+            ['fd', 'bonds'],
+            0.08,
+        )
+    elif emergency == 'yes':
+        # With a reserve already set aside, avoid forcing an extra emergency
+        # buffer into this investable portfolio.
+        shift_from_to(['fd'], ['mutual-funds', 'stocks'], 0.03 if horizon >= 5 else 0.0)
+
+    if liquidity == 'high':
+        shift_from_to(['stocks', 'commodities', 'currency', 'fno', 'mutual-funds', 'gold'], ['fd', 'bonds'], 0.08)
+    elif liquidity == 'low' and horizon >= 5 and emergency == 'yes' and risk != 'low':
+        shift_from_to(['fd', 'bonds'], ['mutual-funds', 'stocks'], 0.05)
+
+    return _fit_to_risk_caps(w, risk)
+
+
+def _candidate_plans(scores, risk, horizon, liquidity='medium', emergency='yes'):
     base = build_dynamic_weights(scores, risk)
     if not base:
         base = dict(RISK_PROFILES[risk])
     base = _fit_to_risk_caps(base, risk)
-    return [
+    candidates = [
         ('Option 1', _shift_mix(base, risk, 'stable'), 'More weight to lower-volatility categories while staying within your selected risk level.'),
         ('Option 2', _fit_to_risk_caps(base, risk), 'Data-driven balanced allocation using the tracked universe.'),
         ('Option 3', _shift_mix(base, risk, 'growth'), 'More weight to growth categories while staying within your selected risk level.'),
     ]
+    adjusted = []
+    for name, weights, description in candidates:
+        constrained = _apply_liquidity_emergency(weights, risk, liquidity, emergency, horizon)
+        liquidity_note = {
+            'high': ' Prioritizes easier access to money.',
+            'medium': ' Balances access to money and growth.',
+            'low': ' Accepts less immediate access to pursue longer-term growth where suitable.',
+        }.get(liquidity, '')
+        emergency_note = (
+            ' No separate emergency fund indicated; adds a more conservative accessible-money tilt.'
+            if emergency == 'no'
+            else ' Emergency fund indicated as already set aside.'
+        )
+        adjusted.append((name, constrained, description + liquidity_note + emergency_note))
+    return adjusted
 
 
 def build_market_adjusted_plan(amount, horizon, risk, liquidity, goal, emergency, market_analysis):
     user = {'risk': risk, 'horizon': horizon, 'liquidity': liquidity, 'goal': goal, 'emergency': emergency}
     scores = score_categories(user, market_analysis)
-    candidates = _candidate_plans(scores, risk, horizon)
+    candidates = _candidate_plans(scores, risk, horizon, liquidity, emergency)
 
     evaluated = []
     risk_penalty = PORTFOLIO_RISK_PENALTY.get(risk, PORTFOLIO_RISK_PENALTY['moderate'])
