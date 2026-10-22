@@ -132,7 +132,7 @@ def analyze_fast():
                 )
                 result["provisional"] = False
                 result["explanation"] = (
-                    "Plan generated using the available tracked Upstox market analysis "
+                    "Plan generated using the available tracked market analysis "
                     "and your selected risk, horizon, liquidity and goal."
                 )
                 return jsonify({
@@ -158,7 +158,7 @@ def analyze_fast():
                 "yoy_return": None,
                 "three_year_return": None,
                 "five_year_return": None,
-                "basis": "Profile allocation while Upstox history refreshes",
+                "basis": "Profile allocation while market history refreshes",
             })
         projected = sum(x["projected_value"] for x in base["allocations"])
         result = dict(base)
@@ -175,7 +175,7 @@ def analyze_fast():
         result["provisional"] = True
         result["explanation"] = (
             "Profile-based allocation shown immediately. Full market analysis "
-            "will use averages from the tracked Upstox universe when history is ready."
+            "will use averages from the tracked market universe when history is ready."
         )
         return jsonify({
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -266,7 +266,7 @@ def refresh_market():
         _engine().clear_runtime_caches()
         return jsonify({
             'success': True,
-            'message': 'Upstox market-data caches cleared. The next request will refresh from Upstox.',
+            'message': 'Market-data caches cleared. The next request will refresh market data.',
             'updated_at': datetime.now(timezone.utc).isoformat(),
         })
     except Exception as exc:
@@ -282,16 +282,16 @@ def market_compare(segment: str):
     try:
         if segment == 'stocks':
             rows = market_universe.compare_stocks()
-            return jsonify({'segment':'stocks','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
+            return jsonify({'segment':'stocks','count':len(rows),'source':'Live market quotes','items':rows})
         if segment == 'fno':
             rows = market_universe.compare_fno()
-            return jsonify({'segment':'fno','count':len(rows),'source':'Upstox Full Market Quotes V3','items':rows})
+            return jsonify({'segment':'fno','count':len(rows),'source':'Live market quotes','items':rows})
         if segment == 'funds':
             rows = market_universe.compare_mutual_funds(100)
-            return jsonify({'segment':'funds','count':len(rows),'source':'Upstox mutual-fund instrument master','items':rows})
+            return jsonify({'segment':'funds','count':len(rows),'source':'Mutual-fund scheme data','items':rows})
         if segment == 'bonds':
             rows = market_universe.compare_bonds()
-            return jsonify({'segment':'bonds','count':len(rows),'source':'Upstox exchange quotes for listed bond/debt ETFs','items':rows})
+            return jsonify({'segment':'bonds','count':len(rows),'source':'Listed bond/debt market quotes','items':rows})
         if segment == 'fd':
             rows = market_universe.compare_fds()
             return jsonify({'segment':'fd','count':len(rows),'source':'Official bank rate pages; general public, ~1-year tenor','items':rows})
@@ -339,15 +339,15 @@ def tracking():
                 pass
 
         live_segments = {
-            'commodities': ('commodities', 50, 'Upstox MCX commodity market quotes'),
-            'currency': ('currency', 50, 'Upstox currency market quotes'),
-            'gold': ('gold', 5, 'Upstox MCX gold contracts'),
+            'commodities': ('commodities', 50, 'MCX commodity market quotes'),
+            'currency': ('currency', 50, 'Currency market quotes'),
+            'gold': ('gold', 5, 'MCX gold contracts'),
         }
         configs = {
-            'stocks': ('stocks', 30, 'Upstox tracked equity quotes'),
-            'fno': ('fno', 30, 'Upstox tracked derivatives quotes'),
-            'mutual-funds': ('mutual-funds', 30, 'Upstox mutual-fund scheme master'),
-            'bonds': ('bonds', 20, 'Upstox listed bond/debt quotes'),
+            'stocks': ('stocks', 30, 'Tracked equity quotes'),
+            'fno': ('fno', 30, 'Tracked derivatives quotes'),
+            'mutual-funds': ('mutual-funds', 30, 'Mutual-fund scheme data'),
+            'bonds': ('bonds', 20, 'Listed bond/debt quotes'),
             'fd': ('fd', len(fd_rows), 'Bank FD rate registry'),
             **live_segments,
         }
