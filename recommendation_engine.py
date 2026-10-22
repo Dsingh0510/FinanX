@@ -263,10 +263,12 @@ def _suggestion_rounding_step(amount: float) -> int:
 
 
 def _rounded_amounts(total_amount: float, weights: List[float], step: int) -> List[float]:
-    """Round suggested amounts to a denomination while preserving the exact total."""
+    """Round suggested amounts while preserving the exact input total."""
     if not weights:
         return []
-    total_units = max(0, int(round(total_amount / step)))
+    total_amount = max(float(total_amount), 0.0)
+    total_units = int(total_amount // step)
+    remainder_amount = round(total_amount - total_units * step, 2)
     positive = [max(float(w), 0.0) for w in weights]
     weight_sum = sum(positive)
     if weight_sum <= 0:
@@ -278,7 +280,13 @@ def _rounded_amounts(total_amount: float, weights: List[float], step: int) -> Li
     order = sorted(range(len(units)), key=lambda i: exact_units[i] - units[i], reverse=True)
     for i in order[:remaining]:
         units[i] += 1
-    return [float(unit * step) for unit in units]
+    amounts = [float(unit * step) for unit in units]
+    # Preserve every rupee of the user's input. Any sub-step remainder is
+    # attached to the largest allocation rather than silently changing total.
+    if amounts:
+        largest = max(range(len(amounts)), key=lambda i: amounts[i])
+        amounts[largest] = round(amounts[largest] + remainder_amount, 2)
+    return amounts
 
 def _select_entity_allocations(amount: float, category_weights: Dict[str, float], market_segments: Dict, risk: str, horizon: int, goal: str) -> Dict[str, List[Dict]]:
     """Split each category amount across the strongest tracked entities."""
